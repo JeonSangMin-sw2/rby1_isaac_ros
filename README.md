@@ -63,24 +63,17 @@ git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pip
 > 우분투 공식 보안 저장소 업데이트로 인해 `Dockerfile.x86_64`를 패치하지 않고 빌드하면 `nvv4l2` 패키지 미발견 및 보안 패키지 버전 고정 에러(`Exit code 100`)로 빌드가 중단됩니다.  
 > *(Ubuntu 24.04 / release-4.0+ 환경은 이 패치가 불필요하므로 건너뛰시면 됩니다).*
 
-* **대상 파일**: `~/isaac_ros_ws/src/isaac_ros_common/docker/Dockerfile.x86_64`
+* **대상 파일**: `~/isaac_ros_ws/src/isaac_ros_common/docker/Dockerfile.base` (또는 `Dockerfile.x86_64`)
 
-1. **`nvv4l2` 예외 처리 (123번 라인 부근)**:
-   ```dockerfile
-   RUN --mount=type=cache,target=/var/cache/apt \
-       (apt-get update && apt-get install -y nvv4l2 || true) \
-       && (ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/lib/x86_64-linux-gnu/libnvcuvid.so || true) \
-       && (ln -s /usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1 /usr/lib/x86_64-linux-gnu/libnvidia-encode.so || true)
-   ```
-2. **보안 패키지 버전 고정 해제 (178번 라인 부근)**:
-   ```dockerfile
-   RUN --mount=type=cache,target=/var/cache/apt \
-       (apt-get update && apt-get install -y --only-upgrade \
-           nghttp2 \
-           openssh-client \
-           libcurl3-gnutls \
-           libc-bin || true)
-   ```
+#### `nvv4l2` 예외 처리 (423번 라인 부근)
+`release-3.2`에서는 구버전(3.1)에 있던 보안 패키지 버전 고정(`nghttp2` 등) 문제가 이미 해결되었으므로, **아래 423번 라인의 `nvv4l2` 예외 처리 하나만 확인/적용**하시면 됩니다:
+
+```dockerfile
+RUN --mount=type=cache,target=/var/cache/apt \
+    (apt-get update && apt-get install -y nvv4l2 || true) \
+    && (ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/lib/x86_64-linux-gnu/libnvcuvid.so || true) \
+    && (ln -s /usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1 /usr/lib/x86_64-linux-gnu/libnvidia-encode.so || true)
+```
 
 ---
 

@@ -128,24 +128,23 @@ git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.gi
 > **Ubuntu 22.04 x86 환경에서만 필요한 필수 패치입니다.**  
 > 우분투 공식 보안 저장소 업데이트로 인해 `isaac_ros_common` 기본 Dockerfile을 그대로 빌드하면 `nvv4l2` 미발견 및 보안 패키지 버전 고정 에러(`Exit code 100`)가 발생합니다.
 
-`isaac_ros_common` 저장소를 클론한 뒤 `Dockerfile.x86_64` (또는 `Dockerfile.base`)에 아래 사항이 반영되어 있는지 확인합니다:
+* **대상 파일**: `~/isaac_ros_ws/src/isaac_ros_common/docker/Dockerfile.base` (또는 심볼릭 링크인 `Dockerfile.x86_64`)
 
-* **파일 위치**: `~/isaac_ros_ws/src/isaac_ros_common/docker/Dockerfile.x86_64`
+#### `nvv4l2` 누락 방지 예외 처리 (423번 라인 부근)
+`release-3.2`에서는 구버전(3.1)에 있던 보안 패키지 버전 충돌(`nghttp2` 등)이 이미 엔비디아 측에서 해결되어 제거되었으므로, **아래 423번 라인의 `nvv4l2` 예외 처리 하나만 적용**해주시면 됩니다:
 
 ```dockerfile
-# 1. nvv4l2 누락 방지 (라인 123 부근)
+# 수정 전:
+# apt-get update && apt-get install -y \
+#     nvv4l2 \
+#     && ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/lib/x86_64-linux-gnu/libnvcuvid.so \
+#     && ln -s /usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1 /usr/lib/x86_64-linux-gnu/libnvidia-encode.so
+
+# 수정 후:
 RUN --mount=type=cache,target=/var/cache/apt \
     (apt-get update && apt-get install -y nvv4l2 || true) \
     && (ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/lib/x86_64-linux-gnu/libnvcuvid.so || true) \
     && (ln -s /usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1 /usr/lib/x86_64-linux-gnu/libnvidia-encode.so || true)
-
-# 2. 보안 패키지 버전 404 실패 방지 (라인 178 부근)
-RUN --mount=type=cache,target=/var/cache/apt \
-    (apt-get update && apt-get install -y --only-upgrade \
-        nghttp2 \
-        openssh-client \
-        libcurl3-gnutls \
-        libc-bin || true)
 ```
 
 ---
