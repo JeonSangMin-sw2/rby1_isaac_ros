@@ -12,3 +12,6 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# External Isaac ROS Packages (managed by version-specific git clone)
+isaac_ros_*/

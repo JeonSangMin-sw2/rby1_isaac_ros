@@ -111,7 +111,18 @@ echo "-v /dev:/dev" > ~/.isaac_ros_dev-dockerargs
 
 ---
 
-## 6. [중요 필수] x86 Dockerfile 사전 패치
+## 6. `isaac_ros_common` 클론 (`release-3.2`)
+
+도커 환경 구동을 위해 NVIDIA 공식 `isaac_ros_common` 패키지를 워크스페이스 `src/` 디렉터리에 클론합니다:
+
+```bash
+cd ~/isaac_ros_ws/src
+git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+```
+
+---
+
+## 7. [중요 필수] x86 Dockerfile 사전 패치
 
 > [!IMPORTANT]
 > **Ubuntu 22.04 x86 환경에서만 필요한 필수 패치입니다.**  
@@ -139,19 +150,13 @@ RUN --mount=type=cache,target=/var/cache/apt \
 
 ---
 
-## 7. 환경 구성 완료 검증 및 단축 커맨드 등록
+## 8. 환경 구성 완료 검증 및 스마트 단축 커맨드(`isaac-ros`) 등록
 
 호스트 설정이 올바르게 되었는지 `isaac_ros_common` 컨테이너를 빌드하고 진입하여 검증합니다.
 
-### 7.1. 레포지토리 및 common 패키지 확인
-`rby1_isaac_ros` 레포지토리에 `isaac_ros_common`이 포함되어 있으므로 별도 클론 없이 바로 사용합니다:
+### 8.1. 최초 컨테이너 빌드 & 진입 테스트
 ```bash
-cd ~/isaac_ros_ws/src/rby1_isaac_ros/isaac_ros_common
-```
-
-### 7.2. 최초 컨테이너 빌드 & 진입 테스트
-```bash
-cd ~/isaac_ros_ws/src/rby1_isaac_ros/isaac_ros_common
+cd ~/isaac_ros_ws/src/isaac_ros_common
 ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh
 ```
 * 최초 실행 시 도커 베이스 이미지 빌드가 진행되며, 완료 후 아래와 같은 컨테이너 셸이 뜨면 **환경 구성이 100% 성공**한 것입니다:
@@ -160,7 +165,7 @@ ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh
   ```
 * 컨테이너 확인 후 `exit` 명령어로 빠져나옵니다.
 
-### 7.3. 어디서나 한 번에 접속하는 스마트 단축 커맨드 등록 (`isaac-ros`)
+### 8.2. 어디서나 한 번에 접속하는 스마트 단축 커맨드 등록 (`isaac-ros`)
 매번 긴 경로로 이동해서 스크립트를 칠 필요 없이 터미널 어디서든 컨테이너가 꺼져 있으면 자동 구동하고, 이미 켜져 있으면 즉시 추가 터미널로 연결하는 스마트 단축 함수를 `~/.bashrc`에 등록합니다:
 
 ```bash
@@ -177,12 +182,10 @@ isaac-ros() {
         docker exec -it "${container_name}" bash
     else
         echo "No running container found. Starting via run_dev.sh..."
-        cd "${target_ws}/src/rby1_isaac_ros/isaac_ros_common" && ISAAC_ROS_WS="${target_ws}" ./scripts/run_dev.sh
+        cd "${target_ws}/src/isaac_ros_common" && ISAAC_ROS_WS="${target_ws}" ./scripts/run_dev.sh
     fi
 }
 EOF
-
-source ~/.bashrc
 
 source ~/.bashrc
 
@@ -192,7 +195,7 @@ isaac-ros
 
 ---
 
-## 8. Jetson Orin (JetPack 6.x) 특이사항
+## 9. Jetson Orin (JetPack 6.x) 특이사항
 
 Jetson Orin 환경의 경우 JetPack이 드라이버와 CUDA를 기본 제공하므로:
 1. Docker 데몬 설정 확인:
@@ -204,11 +207,11 @@ Jetson Orin 환경의 경우 JetPack이 드라이버와 CUDA를 기본 제공하
    ```bash
    echo "-v /dev:/dev" > ~/.isaac_ros_dev-dockerargs
    ```
-3. 동일하게 `isaac_dev` 단축 커맨드로 실행하면 `aarch64` 전용 컨테이너로 자동 진입합니다.
+3. 동일하게 `isaac-ros` 단축 커맨드로 실행하면 `aarch64` 전용 컨테이너로 자동 진입합니다.
 
 ---
 
-## 9. 다음 단계
+## 10. 다음 단계
 
-호스트 환경 구성 및 검증이 완료되었습니다. 이제 메인 가이드로 돌아가 원하는 패키지를 추가하고 빌드 및 구동을 진행합니다:  
+호스트 환경 구성 및 검증이 완료되었습니다. 이제 메인 가이드로 돌아가 예제 노드 및 패키지를 빌드/구동합니다:  
 👉 **[Isaac ROS 메인 가이드로 이동](../README.md)**

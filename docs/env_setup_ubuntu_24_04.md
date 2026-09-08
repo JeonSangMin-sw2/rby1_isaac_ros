@@ -105,19 +105,24 @@ echo "-v /dev:/dev" > ~/.isaac_ros_dev-dockerargs
 
 ---
 
-## 6. 환경 구성 완료 검증 및 단축 커맨드 등록
+## 6. `isaac_ros_common` 클론 (`release-4.0` 이상)
+
+Ubuntu 24.04 환경에서는 `release-4.0` 이상 브랜치를 사용하여 `isaac_ros_common`을 클론합니다:
+
+```bash
+cd ~/isaac_ros_ws/src
+git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+```
+
+---
+
+## 7. 환경 구성 완료 검증 및 스마트 단축 커맨드(`isaac-ros`) 등록
 
 호스트 설정이 올바르게 되었는지 `isaac_ros_common` 컨테이너를 빌드하고 진입하여 검증합니다.
 
-### 6.1. 레포지토리 및 common 패키지 확인
-`rby1_isaac_ros` 레포지토리에 `isaac_ros_common`이 포함되어 있으므로 별도 클론 없이 바로 사용합니다:
+### 7.1. 최초 컨테이너 빌드 & 진입 테스트
 ```bash
-cd ~/isaac_ros_ws/src/rby1_isaac_ros/isaac_ros_common
-```
-
-### 6.2. 최초 컨테이너 빌드 & 진입 테스트
-```bash
-cd ~/isaac_ros_ws/src/rby1_isaac_ros/isaac_ros_common
+cd ~/isaac_ros_ws/src/isaac_ros_common
 ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh
 ```
 * 최초 실행 시 도커 베이스 이미지 빌드가 진행되며, 완료 후 아래와 같은 컨테이너 셸이 뜨면 **환경 구성이 100% 성공**한 것입니다:
@@ -126,7 +131,7 @@ ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh
   ```
 * 컨테이너 확인 후 `exit` 명령어로 빠져나옵니다.
 
-### 6.3. 어디서나 한 번에 접속하는 스마트 단축 커맨드 등록 (`isaac-ros`)
+### 7.2. 어디서나 한 번에 접속하는 스마트 단축 커맨드 등록 (`isaac-ros`)
 매번 긴 경로로 이동해서 스크립트를 칠 필요 없이 터미널 어디서든 컨테이너가 꺼져 있으면 자동 구동하고, 이미 켜져 있으면 즉시 추가 터미널로 연결하는 스마트 단축 함수를 `~/.bashrc`에 등록합니다:
 
 ```bash
@@ -143,7 +148,7 @@ isaac-ros() {
         docker exec -it "${container_name}" bash
     else
         echo "No running container found. Starting via run_dev.sh..."
-        cd "${target_ws}/src/rby1_isaac_ros/isaac_ros_common" && ISAAC_ROS_WS="${target_ws}" ./scripts/run_dev.sh
+        cd "${target_ws}/src/isaac_ros_common" && ISAAC_ROS_WS="${target_ws}" ./scripts/run_dev.sh
     fi
 }
 EOF
@@ -156,7 +161,7 @@ isaac-ros
 
 ---
 
-## 7. 다음 단계
+## 8. 다음 단계
 
-호스트 환경 설정 및 검증이 완료되었습니다. 이제 메인 가이드로 돌아가 원하는 패키지를 추가하고 빌드 및 구동을 진행합니다:  
+호스트 환경 설정 및 검증이 완료되었습니다. 이제 메인 가이드로 돌아가 예제 노드 및 패키지를 빌드/구동합니다:  
 👉 **[Isaac ROS 메인 가이드로 이동](../README.md)**

@@ -1,14 +1,14 @@
 # RBY1 Isaac ROS (`rby1_isaac_ros`)
 
-Rainbow Robotics의 로봇 플랫폼(RBY1 등)에서 NVIDIA Isaac ROS의 하드웨어 가속 비전 노드(`isaac_ros_apriltag`, `isaac_ros_visual_slam`, `isaac_ros_nvblox` 등)를 컨테이너 환경에서 통합 구동하기 위한 표준 개발 레포지토리입니다.
+Rainbow Robotics의 로봇 플랫폼(RBY1 등)에서 NVIDIA Isaac ROS의 하드웨어 가속 비전 노드(`isaac_ros_apriltag`, `isaac_ros_visual_slam`, `isaac_ros_nvblox` 등)를 컨테이너 환경에서 통합 구동하기 위한 예제 및 애플리케이션 개발 레포지토리입니다.
 
-본 레포지토리에는 도커 개발 환경 래퍼인 **`isaac_ros_common` 및 주요 가속 패키지(`isaac_ros_apriltag` 등)가 기본 포함**되어 있어, 별도의 복잡한 패키지 클론 과정 없이 즉시 환경을 빌드하고 실행할 수 있습니다.
+본 레포지토리는 RBY1 특화 예제 노드, 통합 런치 파일, 설정을 관리하며, 대용량 외부 의존성인 NVIDIA 공식 패키지(`isaac_ros_common`, `isaac_ros_apriltag` 등)는 `.gitignore`로 제외되어 호스트 환경 버전에 맞추어 `src/` 경로에 클론하여 사용합니다.
 
 ---
 
 ## 1. ⚙️ 사전 호스트 환경 구성 (필수 선행)
 
-본 워크스페이스를 구동하기 전, 사용 중인 호스트 OS 버전에 맞는 사전 환경 설정(NVIDIA 드라이버, Docker, Container Toolkit, Buildx, 디바이스 마운트, 단축 커맨드 등록)을 먼저 완료해야 합니다.
+본 워크스페이스를 구동하기 전, 사용 중인 호스트 OS 버전에 맞는 사전 환경 설정(NVIDIA 드라이버, Docker, Container Toolkit, Buildx, 디바이스 마운트, `isaac_ros_common` 클론 및 검증)을 먼저 완료해야 합니다.
 
 * 📌 **Ubuntu 22.04 LTS (ROS 2 Humble / release-3.2 권장)**:  
   👉 **[docs/env_setup_ubuntu_22_04.md](docs/env_setup_ubuntu_22_04.md)**
@@ -19,27 +19,68 @@ Rainbow Robotics의 로봇 플랫폼(RBY1 등)에서 NVIDIA Isaac ROS의 하드�
 
 ## 2. 🧩 기본 개발 및 빌드 워크플로우
 
-호스트 설정이 완료되었다면 아래 단계에 따라 컨테이너를 구동하고 패키지를 빌드합니다.
+호스트 설정이 완료되었다면 아래 단계에 따라 필요한 패키지를 구성하고 빌드합니다.
 
-### Step 1. 패키지 구성 확인 및 추가 클론 (선택)
-* **기본 제공 패키지**: `isaac_ros_common`, `isaac_ros_apriltag`는 본 레포지토리에 이미 포함되어 있으므로 별도로 클론할 필요가 없습니다.
-* **추가 패키지 설치 시**: Visual SLAM이나 Nvblox 등 추가 기능이 필요할 경우 동일한 릴리즈 브랜치로 `src/`에 클론합니다:
-  ```bash
-  cd ~/isaac_ros_ws/src
-  # [Visual SLAM 필요 시]
-  # git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
-  # [3D 재구성 Nvblox 필요 시]
-  # git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox.git
-  ```
+### Step 1. 필요한 Isaac ROS 패키지 클론 (`src/` 경로)
+모든 공식 패키지는 NITROS ABI 호환성을 위해 반드시 **동일한 릴리즈 브랜치**로 통일하여 클론합니다.
+
+#### 🔹 Ubuntu 22.04 LTS 호스트 (ROS 2 Humble / release-3.2)
+```bash
+cd ~/isaac_ros_ws/src
+
+# 1. 도커 개발 래퍼 (환경 구성 단계에서 클론하지 않은 경우)
+git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+
+# 2. 비전 및 AprilTag 패키지
+git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag.git
+git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git
+
+# [Visual SLAM 필요 시]
+# git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
+```
+
+#### 🔹 Ubuntu 24.04 LTS 호스트 (ROS 2 Jazzy / release-4.0 이상)
+```bash
+cd ~/isaac_ros_ws/src
+
+# 1. 도커 개발 래퍼 (환경 구성 단계에서 클론하지 않은 경우)
+git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+
+# 2. 비전 및 AprilTag 패키지
+git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag.git
+git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git
+
+# [Visual SLAM 필요 시]
+# git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
+```
 
 ---
 
-### Step 2. [확인] x86 Dockerfile 사전 패치
+### Step 2. [최초 1회 필수] x86 Dockerfile 사전 패치 확인
 
 > [!IMPORTANT]
-> **Ubuntu 22.04 (release-3.x) 환경에서만 해당됩니다.**  
-> 우분투 공식 보안 저장소 업데이트로 인해 `Dockerfile.x86_64`의 `nvv4l2` 미발견 및 보안 패키지 버전 고정 에러(`Exit code 100`) 방지 패치가 적용되어 있어야 합니다.  
-> 본 레포지토리의 `isaac_ros_common/docker/Dockerfile.x86_64`에는 해당 패치가 이미 적용되어 있습니다.
+> **Ubuntu 22.04 (release-3.x) 환경에서만 해당되는 필수 패치입니다.**  
+> 우분투 공식 보안 저장소 업데이트로 인해 `Dockerfile.x86_64`를 패치하지 않고 빌드하면 `nvv4l2` 패키지 미발견 및 보안 패키지 버전 고정 에러(`Exit code 100`)로 빌드가 중단됩니다.  
+> *(Ubuntu 24.04 / release-4.0+ 환경은 이 패치가 불필요하므로 건너뛰시면 됩니다).*
+
+* **대상 파일**: `~/isaac_ros_ws/src/isaac_ros_common/docker/Dockerfile.x86_64`
+
+1. **`nvv4l2` 예외 처리 (123번 라인 부근)**:
+   ```dockerfile
+   RUN --mount=type=cache,target=/var/cache/apt \
+       (apt-get update && apt-get install -y nvv4l2 || true) \
+       && (ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/lib/x86_64-linux-gnu/libnvcuvid.so || true) \
+       && (ln -s /usr/lib/x86_64-linux-gnu/libnvidia-encode.so.1 /usr/lib/x86_64-linux-gnu/libnvidia-encode.so || true)
+   ```
+2. **보안 패키지 버전 고정 해제 (178번 라인 부근)**:
+   ```dockerfile
+   RUN --mount=type=cache,target=/var/cache/apt \
+       (apt-get update && apt-get install -y --only-upgrade \
+           nghttp2 \
+           openssh-client \
+           libcurl3-gnutls \
+           libc-bin || true)
+   ```
 
 ---
 
@@ -49,7 +90,7 @@ Rainbow Robotics의 로봇 플랫폼(RBY1 등)에서 NVIDIA Isaac ROS의 하드�
 
 ```bash
 # 기본 실행 방식 (호스트 터미널)
-cd ~/isaac_ros_ws/src/rby1_isaac_ros/isaac_ros_common
+cd ~/isaac_ros_ws/src/isaac_ros_common
 ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh
 ```
 
@@ -110,8 +151,8 @@ flowchart LR
     --> TF["/tf (camera_frame -> tag_frame)\n/tag_detections"]
 ```
 
-### 3.1. 런치 파일 커스텀 (`isaac_ros_apriltag_realsense.launch.py`)
-* **위치**: `~/isaac_ros_ws/src/rby1_isaac_ros/isaac_ros_apriltag/isaac_ros_apriltag/launch/isaac_ros_apriltag_realsense.launch.py`
+### 3.1. 런치 파일 설정 (`isaac_ros_apriltag_realsense.launch.py`)
+* **위치**: `~/isaac_ros_ws/src/isaac_ros_apriltag/isaac_ros_apriltag/launch/isaac_ros_apriltag_realsense.launch.py`
 * **주요 파라미터**:
   * 마커 크기 (`size`): 실제 태그의 한 변 길이 (단위: 미터, 예: 8cm $\rightarrow$ `0.08`)
   * 해상도: `1280x720` (카메라 및 Rectify 노드 일치)
