@@ -56,17 +56,18 @@ git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pip
 
 ---
 
-### Step 2. [최초 1회 필수] x86 Dockerfile 사전 패치 확인
+### Step 2. [최초 1회 필수] x86_64 PC Dockerfile 사전 패치 확인
 
 > [!IMPORTANT]
-> **Ubuntu 22.04 (release-3.x) 환경에서만 해당되는 필수 패치입니다.**  
-> 우분투 공식 보안 저장소 업데이트로 인해 `Dockerfile.x86_64`를 패치하지 않고 빌드하면 `nvv4l2` 패키지 미발견 및 보안 패키지 버전 고정 에러(`Exit code 100`)로 빌드가 중단됩니다.  
-> *(Ubuntu 24.04 / release-4.0+ 환경은 이 패치가 불필요하므로 건너뛰시면 됩니다).*
+> **이 패치는 일반 PC (Ubuntu 22.04 x86_64) 환경에서만 필요합니다.**  
+> * **x86_64 PC**: x86 apt 저장소에 없는 Jetson 전용 코덱 패키지(`nvv4l2`)를 설치하려다 `Exit code 100` 에러가 발생하므로 아래 예외 처리가 필수입니다.
+> * **Jetson (ARM64 / aarch64)**: JetPack 기본 런타임에 이미 포함되어 있어 **이 패치가 전혀 필요 없으며, 아무 수정 없이 빌드**됩니다.  
+> *(참고: `Dockerfile.x86_64`와 `Dockerfile.aarch64`는 모두 `Dockerfile.base`를 가리키는 심볼릭 링크입니다).*
 
 * **대상 파일**: `~/isaac_ros_ws/src/isaac_ros_common/docker/Dockerfile.base` (또는 `Dockerfile.x86_64`)
 
-#### `nvv4l2` 예외 처리 (423번 라인 부근)
-`release-3.2`에서는 구버전(3.1)에 있던 보안 패키지 버전 고정(`nghttp2` 등) 문제가 이미 해결되었으므로, **아래 423번 라인의 `nvv4l2` 예외 처리 하나만 확인/적용**하시면 됩니다:
+#### `nvv4l2` 예외 처리 (423번 라인 `extended-amd64` 스테이지 부근)
+`release-3.2`에서는 구버전(3.1)에 있던 보안 패키지 버전 고정(`nghttp2` 등) 문제가 이미 해결되었으므로, **x86 PC 빌드 시 아래 423번 라인의 `nvv4l2` 예외 처리 하나만 확인/적용**하시면 됩니다:
 
 ```dockerfile
 RUN --mount=type=cache,target=/var/cache/apt \
