@@ -92,14 +92,17 @@ sudo apt install -y ros-humble-realsense2-camera ros-humble-isaac-ros-realsense
 ---
 
 ### Step 4. 패키지 빌드 (`colcon build`)
-빌드 시간을 단축하기 위해 현재 작업 중인 패키지 단위로 빌드합니다:
+빌드 시간을 단축하고 테스트 패키지 컴파일 에러를 방지하기 위해 테스트 플래그를 비활성화(`BUILD_TESTING=OFF`)하고 필요한 패키지 단위로 빌드합니다:
 
 ```bash
 # 컨테이너 내부에서 실행
-# AprilTag 패키지 빌드
-colcon build --symlink-install --packages-up-to isaac_ros_apriltag
+# 1. AprilTag 패키지 및 관련 의존 노드 빌드 (테스트 빌드 제외)
+colcon build --symlink-install --packages-up-to isaac_ros_apriltag --cmake-args -DBUILD_TESTING=OFF
 
-# 빌드 환경 반영 (오버레이 적용)
+# (참고: 워크스페이스 내 모든 패키지 전체 빌드 시)
+# colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF
+
+# 2. 빌드 환경 반영 (오버레이 적용)
 source /opt/ros/humble/setup.bash             # Jazzy의 경우 /opt/ros/jazzy/setup.bash
 source /workspaces/isaac_ros-dev/install/setup.bash
 ```
