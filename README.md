@@ -1,0 +1,154 @@
+# RBY1 Isaac ROS (`rby1_isaac_ros`)
+
+Rainbow Robotics의 로봇 플랫폼(RBY1 등)에서 NVIDIA Isaac ROS의 하드웨어 가속 비전 노드(`isaac_ros_apriltag`, `isaac_ros_visual_slam`, `isaac_ros_nvblox` 등)를 컨테이너 환경에서 통합 구동하기 위한 표준 개발 레포지토리입니다.
+
+본 레포지토리에는 도커 개발 환경 래퍼인 **`isaac_ros_common` 및 주요 가속 패키지(`isaac_ros_apriltag` 등)가 기본 포함**되어 있어, 별도의 복잡한 패키지 클론 과정 없이 즉시 환경을 빌드하고 실행할 수 있습니다.
+
+---
+
+## 1. ⚙️ 사전 호스트 환경 구성 (필수 선행)
+
+본 워크스페이스를 구동하기 전, 사용 중인 호스트 OS 버전에 맞는 사전 환경 설정(NVIDIA 드라이버, Docker, Container Toolkit, Buildx, 디바이스 마운트, 단축 커맨드 등록)을 먼저 완료해야 합니다.
+
+* 📌 **Ubuntu 22.04 LTS (ROS 2 Humble / release-3.2 권장)**:  
+  👉 **[docs/env_setup_ubuntu_22_04.md](docs/env_setup_ubuntu_22_04.md)**
+* 📌 **Ubuntu 24.04 LTS (ROS 2 Jazzy / release-4.0+ 권장)**:  
+  👉 **[docs/env_setup_ubuntu_24_04.md](docs/env_setup_ubuntu_24_04.md)**
+
+---
+
+## 2. 🧩 기본 개발 및 빌드 워크플로우
+
+호스트 설정이 완료되었다면 아래 단계에 따라 컨테이너를 구동하고 패키지를 빌드합니다.
+
+### Step 1. 패키지 구성 확인 및 추가 클론 (선택)
+* **기본 제공 패키지**: `isaac_ros_common`, `isaac_ros_apriltag`는 본 레포지토리에 이미 포함되어 있으므로 별도로 클론할 필요가 없습니다.
+* **추가 패키지 설치 시**: Visual SLAM이나 Nvblox 등 추가 기능이 필요할 경우 동일한 릴리즈 브랜치로 `src/`에 클론합니다:
+  ```bash
+  cd ~/isaac_ros_ws/src
+  # [Visual SLAM 필요 시]
+  # git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
+  # [3D 재구성 Nvblox 필요 시]
+  # git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox.git
+  ```
+
+---
+
+### Step 2. [확인] x86 Dockerfile 사전 패치
+
+> [!IMPORTANT]
+> **Ubuntu 22.04 (release-3.x) 환경에서만 해당됩니다.**  
+> 우분투 공식 보안 저장소 업데이트로 인해 `Dockerfile.x86_64`의 `nvv4l2` 미발견 및 보안 패키지 버전 고정 에러(`Exit code 100`) 방지 패치가 적용되어 있어야 합니다.  
+> 본 레포지토리의 `isaac_ros_common/docker/Dockerfile.x86_64`에는 해당 패치가 이미 적용되어 있습니다.
+
+---
+
+### Step 3. 컨테이너 구동 및 세션 진입
+
+`isaac_ros_common`은 실행 중인 하드웨어(x86 PC 또는 Jetson ARM64)를 자동으로 감지하여 최적의 GPU 가속 컨테이너를 구동합니다.
+
+```bash
+# 기본 실행 방식 (호스트 터미널)
+cd ~/isaac_ros_ws/src/rby1_isaac_ros/isaac_ros_common
+ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh
+```
+
+#### ⚡ 스마트 단축 커맨드 사용 (`isaac-ros` 권장)
+환경 구성 단계에서 `~/.bashrc`에 단축 함수를 등록해 두었다면, 어느 디렉터리에 있든 터미널에서 아래 한 단어로 컨테이너 자동 구동 및 진입(실행 중이면 추가 터미널 자동 접속)이 가능합니다:
+```bash
+isaac-ros
+```
+> 실행 완료 시 컨테이너 프롬프트(`admin@<hostname>:/workspaces/isaac_ros-dev$`)로 자동 진입합니다.
+
+---
+
+### Step 4. 컨테이너 내부 의존성 설치 (`rosdep`)
+컨테이너 내부에서 패키지가 요구하는 모든 NITROS 및 GXF 가속 라이브러리를 공식 패키지 저장소로부터 자동 해결합니다:
+
+```bash
+# 컨테이너 내부에서 실행
+cd /workspaces/isaac_ros-dev
+
+# 1. rosdep을 통한 Isaac ROS 핵심 의존성(NITROS 등) 일괄 설치
+sudo apt update
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+
+# 2. 센서 드라이버 설치 (RealSense 사용 시)
+# Ubuntu 22.04 (Humble):
+sudo apt install -y ros-humble-realsense2-camera ros-humble-isaac-ros-realsense
+# Ubuntu 24.04 (Jazzy):
+# sudo apt install -y ros-jazzy-realsense2-camera
+```
+
+---
+
+### Step 5. 패키지 빌드 (`colcon build`)
+빌드 시간을 단축하기 위해 현재 작업 중인 패키지 단위로 빌드합니다:
+
+```bash
+# 컨테이너 내부에서 실행
+# AprilTag 패키지 빌드
+colcon build --symlink-install --packages-up-to isaac_ros_apriltag
+
+# 빌드 환경 반영 (오버레이 적용)
+source /opt/ros/humble/setup.bash             # Jazzy의 경우 /opt/ros/jazzy/setup.bash
+source /workspaces/isaac_ros-dev/install/setup.bash
+```
+
+---
+
+## 3. 🚀 패키지 실행 및 검증 예시: RealSense + AprilTag 3D 추적
+
+Isaac ROS 노드는 Zero-Copy GPU 데이터 전송을 극대화하기 위해 독립 바이너리가 아닌 **Composable Node Component** 형태로 동작하므로, 런치(`launch.py`) 파일을 통해 컨테이너에 결합하여 실행합니다.
+
+```mermaid
+flowchart LR
+    RS["realsense2_camera\n(/realsense2_camera/color/image_raw)"]
+    -->|"GPU Zero-Copy"| RECT["rectify_node (GPU 왜곡 보정)\n(/image_rect)"]
+    -->|"NITROS Type"| APRIL["apriltag_node (AprilTag 6-DoF 추정)"]
+    --> TF["/tf (camera_frame -> tag_frame)\n/tag_detections"]
+```
+
+### 3.1. 런치 파일 커스텀 (`isaac_ros_apriltag_realsense.launch.py`)
+* **위치**: `~/isaac_ros_ws/src/rby1_isaac_ros/isaac_ros_apriltag/isaac_ros_apriltag/launch/isaac_ros_apriltag_realsense.launch.py`
+* **주요 파라미터**:
+  * 마커 크기 (`size`): 실제 태그의 한 변 길이 (단위: 미터, 예: 8cm $\rightarrow$ `0.08`)
+  * 해상도: `1280x720` (카메라 및 Rectify 노드 일치)
+
+### 3.2. 런치 실행 (컨테이너 내부)
+```bash
+source /opt/ros/humble/setup.bash
+source /workspaces/isaac_ros-dev/install/setup.bash
+ros2 launch isaac_ros_apriltag isaac_ros_apriltag_realsense.launch.py
+```
+
+### 3.3. 호스트에서 결과 모니터링
+새 호스트 터미널에서 TF 변환 및 영상을 확인합니다:
+```bash
+# 1. 3D 좌표 변환(TF) 출력 확인
+ros2 run tf2_ros tf2_echo camera_color_optical_frame tag36h11:0
+
+# 2. RViz2 시각화
+rviz2
+```
+* **RViz2 디스플레이 설정**:
+  * `Fixed Frame`: `camera_color_optical_frame`
+  * `Add` $\rightarrow$ `Image` (Topic: `/image_rect`)
+  * `Add` $\rightarrow$ `TF` (카메라 기준 마커 3D 축 확인)
+
+---
+
+## 4. 🛠️ 컨테이너 세션 관리 치트시트
+
+* **멀티 터미널 추가 접속 (호스트 터미널에서 실행)**:
+  컨테이너가 실행 중인 상태에서 새 터미널 창을 열고 `isaac-ros`를 입력하면 자동으로 실행 중인 컨테이너에 attach됩니다:
+  ```bash
+  isaac-ros
+  # 또는 직접 명령어: docker exec -it isaac_ros_dev-x86_64-container bash
+  ```
+* **세션 종료**: 컨테이너 셸에서 `exit`
+* **컨테이너 강제 중지**: `docker stop isaac_ros_dev-x86_64-container`
+* **💡 의존성 보존 팁**:
+  * `run_dev.sh`는 `--rm` 플래그로 동작하므로 컨테이너를 껐다 켜면 `apt-get`으로 설치한 바이너리는 초기화됩니다.
+  * 단, `/workspaces/isaac_ros-dev`에 저장된 `src/`, `build/`, `install/` 산출물은 호스트 디스크에 영구 보존되므로, 재진입 시 `rosdep install`만 한 번 다시 수행하면 이전 빌드 결과를 즉시 로드할 수 있습니다.
