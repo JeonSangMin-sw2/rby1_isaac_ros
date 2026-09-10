@@ -109,44 +109,48 @@ source /workspaces/isaac_ros-dev/install/setup.bash
 
 ---
 
-## 3. 🚀 패키지 실행 및 검증 예시: RealSense + AprilTag 3D 추적
+## 3. 📚 패키지별 구성 및 실행 매뉴얼 (Tutorials & Modules)
 
-Isaac ROS 노드는 Zero-Copy GPU 데이터 전송을 극대화하기 위해 독립 바이너리가 아닌 **Composable Node Component** 형태로 동작하므로, 런치(`launch.py`) 파일을 통해 컨테이너에 결합하여 실행합니다.
+본 워크스페이스에서 활용 가능한 NVIDIA Isaac ROS 가속 노드별 상세 가이드 및 튜토리얼 목록입니다. 각 모듈의 상세 런치 설정, 파라미터 튜닝, 카메라 기종별 대응 매뉴얼은 링크된 문서를 참조하십시오.
 
-```mermaid
-flowchart LR
-    RS["realsense2_camera\n(/realsense2_camera/color/image_raw)"]
-    -->|"GPU Zero-Copy"| RECT["rectify_node (GPU 왜곡 보정)\n(/image_rect)"]
-    -->|"NITROS Type"| APRIL["apriltag_node (AprilTag 6-DoF 추정)"]
-    --> TF["/tf (camera_frame -> tag_frame)\n/tag_detections"]
-```
+### 📌 패키지 매뉴얼 목록
 
-### 3.1. 런치 파일 설정 (`isaac_ros_apriltag_realsense.launch.py`)
-* **위치**: `~/isaac_ros_ws/src/isaac_ros_apriltag/isaac_ros_apriltag/launch/isaac_ros_apriltag_realsense.launch.py`
-* **주요 파라미터**:
-  * 마커 크기 (`size`): 실제 태그의 한 변 길이 (단위: 미터, 예: 8cm $\rightarrow$ `0.08`)
-  * 해상도: `1280x720` (카메라 및 Rectify 노드 일치)
+* 🎯 **[AprilTag 3D 마커 추적 및 rby1_apriltag 응용 패키지](docs/tutorial_apriltag.md)**:  
+  👉 **[docs/tutorial_apriltag.md](docs/tutorial_apriltag.md)**
+  * **cuAprilTag** 기반 GPU 가속 6-DoF 마커 포즈 추정 파이프라인
+  * **`rby1_apriltag` 응용 패키지**: 타겟 마커 ID 선별, 순방향 행렬 중앙값+SVD 회전 평균화(Jitter 안정화), 표준 `PoseStamped` 및 `/tf` 발행
+  * 도커 외부(호스트 일반 환경) 무설치 표준 토픽 연동 가이드
+  * RealSense(D405, D435, D455) 720p 및 848x480 60~90 FPS 초고속 설정
+  * ZED 카메라 및 일반 USB 웹캠 직결 파이프라인
 
-### 3.2. 런치 실행 (컨테이너 내부)
+* 🧭 **[Visual SLAM (cuVSLAM 3D 오도메트리)](docs/tutorial_visual_slam.md)** *(작성 예정)*:
+  * 스테레오 카메라 및 IMU 융합 GPU 가속 실시간 6-DoF 로봇 위치 추정
+
+* 🧱 **[nvblox (GPU 실시간 3D 복원 & 매핑)](docs/tutorial_nvblox.md)** *(작성 예정)*:
+  * TSDF / ESDF 복셀 기반 실시간 3D 매핑 및 로봇 장애물 회피 연동
+
+---
+
+### ⚡ AprilTag & rby1_apriltag 빠른 시작 요약 (Quickstart)
+
 ```bash
+# 1. 도커 컨테이너 내부: Isaac ROS cuAprilTag 실행
 source /opt/ros/humble/setup.bash
 source /workspaces/isaac_ros-dev/install/setup.bash
 ros2 launch isaac_ros_apriltag isaac_ros_apriltag_realsense.launch.py
-```
 
-### 3.3. 호스트에서 결과 모니터링
-새 호스트 터미널에서 TF 변환 및 영상을 확인합니다:
-```bash
-# 1. 3D 좌표 변환(TF) 출력 확인
-ros2 run tf2_ros tf2_echo camera_color_optical_frame tag36h11:0
+# 2. 도커 컨테이너 내부 (추가 터미널): 타겟 마커 선별 & 포즈 안정화 노드 실행
+source /opt/ros/humble/setup.bash
+source /workspaces/isaac_ros-dev/install/setup.bash
+ros2 launch rby1_apriltag target_tag_filter.launch.py
 
-# 2. RViz2 시각화
+# 3. 호스트 PC 일반 터미널 (도커 진입 불필요, 추가 설치 불필요):
+ros2 topic echo /target_marker/pose
+ros2 run tf2_ros tf2_echo camera_color_optical_frame target_marker_7
 rviz2
 ```
-* **RViz2 디스플레이 설정**:
-  * `Fixed Frame`: `camera_color_optical_frame`
-  * `Add` $\rightarrow$ `Image` (Topic: `/image_rect`)
-  * `Add` $\rightarrow$ `TF` (카메라 기준 마커 3D 축 확인)
+> 💡 전체 런치 코드, 파라미터 정의 표, 카메라별 튜닝, 호스트 연동 파이썬 코드는 [docs/tutorial_apriltag.md](docs/tutorial_apriltag.md)에 상세히 수록되어 있습니다.
+
 
 ---
 
@@ -160,6 +164,9 @@ rviz2
   ```
 * **세션 종료**: 컨테이너 셸에서 `exit`
 * **컨테이너 강제 중지**: `docker stop isaac_ros_dev-x86_64-container`
-* **💡 의존성 보존 팁**:
-  * `run_dev.sh`는 `--rm` 플래그로 동작하므로 컨테이너를 껐다 켜면 `apt-get`으로 설치한 바이너리는 초기화됩니다.
-  * 단, `/workspaces/isaac_ros-dev`에 저장된 `src/`, `build/`, `install/` 산출물은 호스트 디스크에 영구 보존되므로, 재진입 시 `rosdep install`만 한 번 다시 수행하면 이전 빌드 결과를 즉시 로드할 수 있습니다.
+* **💡 의존성 보존 및 도커 이미지 커밋 (매번 apt 재설치 방지)**:
+  컨테이너 내부에서 `apt`나 `rosdep`으로 설치한 패키지는 컨테이너 재생성 시 초기화됩니다. 의존성 설치 후 호스트 터미널에서 현재 컨테이너를 도커 이미지로 커밋해 두면 영구적으로 보존됩니다:
+  ```bash
+  # 호스트 PC 터미널에서 실행:
+  docker commit isaac_ros_dev-x86_64-container isaac_ros_dev-x86_64:latest
+  ```

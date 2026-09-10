@@ -1,0 +1,9 @@
+# RBY1 Isaac ROS 확장 의존성 레이어
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# 1. RealSense ROS 2 카메라 드라이버 및 Isaac ROS 가속 노드 영구 설치
+RUN apt-get update && apt-get install -y \
+    ros-humble-realsense2-camera \
+    ros-humble-isaac-ros-realsense \
+    && rm -rf /var/lib/apt/lists/*

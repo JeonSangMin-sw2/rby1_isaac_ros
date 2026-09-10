@@ -1,0 +1,10 @@
+target_tag_filter:
+  ros__parameters:
+    target_ids: [7]                   # 필터링할 AprilTag ID 화이트리스트
+    input_topic: "/tag_detections"     # Isaac ROS cuAprilTag 감지 토픽
+    output_pose_topic: "/target_marker/pose" # 표준 ROS 2 PoseStamped 토픽
+    broadcast_tf: true                 # TF 변환 브로드캐스트 여부
+    target_frame_prefix: "target_marker" # TF child frame 이름 접두사 (예: target_marker_7)
+    filter_jitter: true                # 순방향 행렬 중앙값+SVD 기반 지터 억제 활성화
+    window_size: 5                     # 평활화 슬라이딩 윈도우 크기 (프레임 단위)
+    publish_per_tag_topics: true       # ID별 /target_marker_<id>/pose 토픽 분리 발행 여부
