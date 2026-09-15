@@ -1,0 +1,10 @@
+# Interface and adapters from NVIDIA-ISAAC-ROS/isaac_ros_cumotion release-3.2.
+# Do not add time parameterization: cuMotion already returns a timed trajectory.
+planning_plugin: isaac_ros_cumotion_moveit/CumotionPlanner
+request_adapters: >-
+  default_planner_request_adapters/FixWorkspaceBounds
+  default_planner_request_adapters/FixStartStateBounds
+  default_planner_request_adapters/FixStartStateCollision
+  default_planner_request_adapters/FixStartStatePathConstraints
+start_state_max_bounds_error: 0.1
+num_steps: 32

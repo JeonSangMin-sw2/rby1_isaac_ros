@@ -1,0 +1,17 @@
+# Build on the existing Isaac ROS release-3.2 (Humble) development image.
+ARG BASE_IMAGE=isaac_ros_dev-x86_64:latest
+FROM ${BASE_IMAGE}
+USER root
+# Host UID may have no writable home in the image. cuRobo JIT-compiles CUDA
+# extensions on first use, so put runtime caches in a writable container path.
+ENV TORCH_EXTENSIONS_DIR=/tmp/rby1_torch_extensions \
+    XDG_CACHE_HOME=/tmp/rby1_cache
+RUN test -f /opt/ros/humble/setup.bash \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       ros-humble-isaac-ros-cumotion \
+       ros-humble-isaac-ros-cumotion-moveit \
+       ros-humble-moveit \
+       ros-humble-ros2-control \
+       ros-humble-ros2-controllers \
+       python3-numpy python3-yaml python3-pytest \
+    && rm -rf /var/lib/apt/lists/*

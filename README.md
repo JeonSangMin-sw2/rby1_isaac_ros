@@ -115,6 +115,11 @@ source /workspaces/isaac_ros-dev/install/setup.bash
 
 ### 📌 패키지 매뉴얼 목록
 
+* **[cuMotion 기반 RBY1 팔 경로 계획 및 실행](docs/tutorial_cumotion.md)**:
+  * `rby1_cumotion`: M/A v1.2 단일 팔, URDF에서 XRDF 생성, MoveIt/기존 컨트롤러 연결
+  * 가상 하드웨어 예제, cuMotion Docker 이미지, 호스트 실기체 연결 방법
+  * OMPL 비교 실행과 관절 상태·궤적 검증
+
 * 🎯 **[AprilTag 3D 마커 추적 및 rby1_apriltag 응용 패키지](docs/tutorial_apriltag.md)**:  
   👉 **[docs/tutorial_apriltag.md](docs/tutorial_apriltag.md)**
   * **cuAprilTag** 기반 GPU 가속 6-DoF 마커 포즈 추정 파이프라인

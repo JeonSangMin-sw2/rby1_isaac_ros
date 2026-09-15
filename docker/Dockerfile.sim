@@ -1,0 +1,9 @@
+# An isolated MuJoCo display: no host X11 socket or desktop credentials required.
+# Run with docker --init so Xvfb's readiness signal reaches xvfb-run.
+ARG SIM_IMAGE=rainbowroboticsofficial/rby1-sim:0.10.6-m_v1.2
+FROM ${SIM_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb xauth ffmpeg xdotool && rm -rf /var/lib/apt/lists/*
+ENV LIBGL_ALWAYS_SOFTWARE=1 \
+    __GLX_VENDOR_LIBRARY_NAME=mesa
+CMD ["xvfb-run", "--server-num=99", "--auth-file=/tmp/rby1-sim.xauth", "--server-args=-screen 0 1280x900x24 -nolisten tcp", "./app_main"]
