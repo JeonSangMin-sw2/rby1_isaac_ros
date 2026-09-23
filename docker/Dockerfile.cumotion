@@ -1,17 +1,48 @@
-# Build on the existing Isaac ROS release-3.2 (Humble) development image.
-ARG BASE_IMAGE=isaac_ros_dev-x86_64:latest
+# cuMotion layer for the Isaac ROS development image.
+#
+# This is an isaac_ros_common layer, not a standalone image: chaining it keeps
+# one image and one container instead of a second 36 GB copy. Enable it with
+#   cp docker/isaac_ros_common-config ~/.isaac_ros_common-config
+# and build the usual way with isaac_ros_common/scripts/run_dev.sh.
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
+
 USER root
-# Host UID may have no writable home in the image. cuRobo JIT-compiles CUDA
-# extensions on first use, so put runtime caches in a writable container path.
-ENV TORCH_EXTENSIONS_DIR=/tmp/rby1_torch_extensions \
-    XDG_CACHE_HOME=/tmp/rby1_cache
-RUN test -f /opt/ros/humble/setup.bash \
-    && apt-get update && apt-get install -y --no-install-recommends \
-       ros-humble-isaac-ros-cumotion \
-       ros-humble-isaac-ros-cumotion-moveit \
-       ros-humble-moveit \
-       ros-humble-ros2-control \
-       ros-humble-ros2-controllers \
-       python3-numpy python3-yaml python3-pytest \
+
+# cuRobo JIT-compiles its CUDA kernels and Triton caches beside $HOME, neither of
+# which an arbitrary host UID can write. Give both a known, writable home.
+ENV CUDA_HOME=/usr/local/cuda \
+    TORCH_EXTENSIONS_DIR=/opt/rby1/torch_extensions \
+    TRITON_CACHE_DIR=/opt/rby1/triton \
+    XDG_CACHE_HOME=/opt/rby1/xdg \
+    RBY1_BUNDLES=/opt/rby1/bundles
+# release-3.2 ships CUDA 12.6, whose nvcc stops at compute_90, while Blackwell
+# (RTX 50xx) is compute_120. Emit PTX and let the driver finish it at load time.
+# Drop this once the toolkit in the base image reaches 12.8 or newer.
+ENV TORCH_CUDA_ARCH_LIST=9.0+PTX
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-humble-isaac-ros-cumotion \
+        ros-humble-isaac-ros-cumotion-moveit \
+        ros-humble-moveit \
+        ros-humble-ros2-control \
+        ros-humble-ros2-controllers \
+        python3-numpy python3-yaml python3-pytest \
     && rm -rf /var/lib/apt/lists/*
+
+COPY patches/curobo_compat.py /opt/rby1/patches/curobo_compat.py
+RUN python3 /opt/rby1/patches/curobo_compat.py
+
+# Compiling cuRobo's kernels needs nvcc, not a GPU, so do it here: left to first
+# run it costs about three minutes inside every fresh container, and the cache
+# would be lost again the moment that container is replaced.
+RUN mkdir -p ${TORCH_EXTENSIONS_DIR} ${TRITON_CACHE_DIR} ${XDG_CACHE_HOME} \
+    && . /opt/ros/humble/setup.sh \
+    && python3 -c "import curobo.curobolib.kinematics, curobo.curobolib.geom, \
+curobo.curobolib.tensor_step, curobo.curobolib.opt, curobo.curobolib.ls" \
+    && chmod -R a+rwX /opt/rby1
+
+# Bundles built on the host by docker/make_bundles.sh. Baking them is what frees
+# the image from needing rby1_description or rby1_moveit_* at all.
+COPY bundles ${RBY1_BUNDLES}
+RUN chmod -R a+rX ${RBY1_BUNDLES}

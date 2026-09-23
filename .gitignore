@@ -17,3 +17,7 @@ Thumbs.db
 
 # External Isaac ROS Packages (managed by version-specific git clone)
 isaac_ros_*/
+
+# Generated model bundles staged for the Docker image (docker/make_bundles.sh)
+docker/bundles/*
+!docker/bundles/.gitkeep

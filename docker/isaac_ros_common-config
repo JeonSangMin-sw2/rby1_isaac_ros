@@ -1,0 +1,10 @@
+# Copy this to ~/.isaac_ros_common-config, then build and enter the container the
+# usual way with isaac_ros_common/scripts/run_dev.sh. One image, one container:
+# the cuMotion layer is appended to the official chain rather than forked from it.
+#
+#   cp docker/isaac_ros_common-config ~/.isaac_ros_common-config
+#
+# RealSense comes from NVIDIA's own layer, which source-builds librealsense and
+# packages realsense2_camera; do not also apt-install it.
+CONFIG_IMAGE_KEY=ros2_humble.realsense.cumotion
+CONFIG_DOCKER_SEARCH_DIRS=("${HOME}/isaac_ros_ws/src/rby1_isaac_ros/docker")

@@ -40,9 +40,11 @@ class PrepareSim(Node):
     def __init__(self):
         super().__init__('rby1_prepare_sim')
         self.declare_parameter('model_directory', '')
+        self.declare_parameter('group', '')
         self.declare_parameter('container', 'rby1-cumotion-sim')
         self.declare_parameter('driver_namespace', 'rby1')
-        self.metadata, _ = load_model(Path(self.get_parameter('model_directory').value))
+        self.metadata, _ = load_model(Path(self.get_parameter('model_directory').value),
+                                      self.get_parameter('group').value or None)
         check_simulator(self.get_parameter('container').value, self.metadata['model'])
         self.prefix = '/' + self.get_parameter('driver_namespace').value.strip('/')
         self.positions = {}

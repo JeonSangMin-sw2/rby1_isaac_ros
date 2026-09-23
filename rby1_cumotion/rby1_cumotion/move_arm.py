@@ -30,8 +30,8 @@ def check_locked(metadata, positions, tolerance):
 
 def validate_trajectory(trajectory, metadata, current, tolerance=0.03):
     names = list(trajectory.joint_names)
-    if len(names) != 7 or set(names) != set(metadata['active_joints']):
-        raise ValueError('Planner returned joints outside the selected arm, or missing/duplicate joints')
+    if len(names) != len(metadata['active_joints']) or set(names) != set(metadata['active_joints']):
+        raise ValueError('Planner returned joints outside the selected group, or missing/duplicate joints')
     if len(trajectory.points) < 2:
         raise ValueError('Planner returned an empty or single-point trajectory')
     previous = -1.0
@@ -75,15 +75,17 @@ class MoveArm(Node):
     def __init__(self):
         super().__init__('rby1_cumotion_example')
         for name, default in {
-            'model_directory': '', 'pipeline': 'isaac_ros_cumotion', 'execute': False,
+            'model_directory': '', 'group': '', 'pipeline': 'isaac_ros_cumotion', 'execute': False,
             'offset_xyz': [0.03, 0.0, 0.0], 'velocity_scaling': 0.1,
             'acceleration_scaling': 0.1, 'planning_time': 30.0,
             'server_timeout': 120.0, 'state_max_age': 2.0,
             'locked_joint_tolerance': 0.01, 'joint_states_topic': '/joint_states',
+            'warmup': True, 'warmup_attempts': 6,
             'move_action': '/move_action', 'execute_action': '/execute_trajectory',
         }.items():
             self.declare_parameter(name, default)
-        self.metadata, self.robot = load_model(Path(self.param('model_directory')))
+        self.metadata, self.robot = load_model(Path(self.param('model_directory')),
+                                               self.param('group') or None)
         self.state = {}
         self.subscription = self.create_subscription(
             JointState, self.param('joint_states_topic'), self.on_state, qos_profile_sensor_data)
@@ -138,22 +140,8 @@ class MoveArm(Node):
             raise RuntimeError(f'Action failed: status={result.status}, MoveIt error={result.result.error_code.val}')
         return result.result
 
-    def run(self):
-        offset = self.param('offset_xyz')
-        if len(offset) != 3 or not all(map(math.isfinite, offset)) or np.linalg.norm(offset) > 0.1:
-            raise ValueError('offset_xyz must contain 3 finite metres, with norm <= 0.1')
-        for name in ('velocity_scaling', 'acceleration_scaling'):
-            if not 0.0 < self.param(name) <= 1.0:
-                raise ValueError(f'{name} must be in (0, 1]')
-        for name in ('planning_time', 'server_timeout', 'state_max_age', 'locked_joint_tolerance'):
-            if not math.isfinite(self.param(name)) or self.param(name) <= 0.0:
-                raise ValueError(f'{name} must be finite and positive')
-        if self.param('pipeline') not in ('isaac_ros_cumotion', 'ompl'):
-            raise ValueError('pipeline must be isaac_ros_cumotion or ompl')
-        if not self.planner.wait_for_server(timeout_sec=self.param('server_timeout')):
-            raise TimeoutError('MoveIt move_action server is unavailable')
-        if self.param('execute') and not self.executor_client.wait_for_server(timeout_sec=self.param('server_timeout')):
-            raise TimeoutError('MoveIt execute_trajectory server is unavailable')
+    def plan(self, offset):
+        """Build and send one plan-only request; returns the result and its inputs."""
         end = time.monotonic() + 10.0
         while True:
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -196,8 +184,52 @@ class MoveArm(Node):
         request.goal_constraints = [Constraints(position_constraints=[position], orientation_constraints=[orientation])]
         goal.planning_options.plan_only = True
         goal.planning_options.planning_scene_diff.is_diff = True
-        begin = time.monotonic()
         result = self.run_action(self.planner, goal, self.param('planning_time') + 30.0)
+        return result, request
+
+    def warm(self):
+        """Absorb cuMotion's first plan, which the MoveIt plugin cannot wait for.
+
+        That first call captures CUDA graphs and takes about ten seconds for a
+        13-joint group, while the plugin waits a hardcoded five and then
+        abandons the goal. cuMotion keeps working, so the next request is
+        refused with 'Planner is busy' until it finishes. Retrying here means a
+        caller's first real query is never the one that pays for this.
+        """
+        for attempt in range(1, int(self.param('warmup_attempts')) + 1):
+            started = time.monotonic()
+            try:
+                self.plan(self.param('offset_xyz'))
+                self.get_logger().info(f'warmup done in {time.monotonic() - started:.1f}s '
+                                       f'after {attempt} attempt(s)')
+                return
+            except Exception as error:
+                self.get_logger().info(f'warmup attempt {attempt} not ready: {error}')
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline:
+                    rclpy.spin_once(self, timeout_sec=0.1)
+        raise TimeoutError('Planner never became ready; see the cumotion_planner log')
+
+    def run(self):
+        offset = self.param('offset_xyz')
+        if len(offset) != 3 or not all(map(math.isfinite, offset)) or np.linalg.norm(offset) > 0.1:
+            raise ValueError('offset_xyz must contain 3 finite metres, with norm <= 0.1')
+        for name in ('velocity_scaling', 'acceleration_scaling'):
+            if not 0.0 < self.param(name) <= 1.0:
+                raise ValueError(f'{name} must be in (0, 1]')
+        for name in ('planning_time', 'server_timeout', 'state_max_age', 'locked_joint_tolerance'):
+            if not math.isfinite(self.param(name)) or self.param(name) <= 0.0:
+                raise ValueError(f'{name} must be finite and positive')
+        if self.param('pipeline') not in ('isaac_ros_cumotion', 'ompl'):
+            raise ValueError('pipeline must be isaac_ros_cumotion or ompl')
+        if not self.planner.wait_for_server(timeout_sec=self.param('server_timeout')):
+            raise TimeoutError('MoveIt move_action server is unavailable')
+        if self.param('execute') and not self.executor_client.wait_for_server(timeout_sec=self.param('server_timeout')):
+            raise TimeoutError('MoveIt execute_trajectory server is unavailable')
+        if self.param('warmup'):
+            self.warm()
+        begin = time.monotonic()
+        result, request = self.plan(offset)
         current = self.snapshot()
         trajectory = result.planned_trajectory
         validate_trajectory(trajectory.joint_trajectory, self.metadata, current)

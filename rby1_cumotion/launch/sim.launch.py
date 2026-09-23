@@ -20,7 +20,8 @@ def setup(context):
         return LaunchConfiguration(name).perform(context)
 
     directory = str(Path(value('model_directory')).resolve())
-    metadata, _ = load_model(directory)
+    group = value('group')
+    metadata, _ = load_model(directory, group or None)
     if metadata['model'] != 'm_1_2':
         raise ValueError('sim.launch.py requires an M v1.2 model')
     share = Path(get_package_share_directory('rby1_cumotion'))
@@ -31,10 +32,12 @@ def setup(context):
                   parameters=[str(driver_share / 'config/driver_parameters.yaml'),
                               {'robot_ip': '127.0.0.1:50051', 'model': 'm'}])
     ready = Node(package='rby1_cumotion', executable='prepare_sim', output='screen',
-                 parameters=[{'model_directory': directory, 'container': value('container')}])
+                 parameters=[{'model_directory': directory, 'group': metadata['group'],
+                              'container': value('container')}])
     demo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(str(share / 'launch/demo.launch.py')),
-        launch_arguments={'model_directory': directory, 'pipeline': value('pipeline'),
+        launch_arguments={'model_directory': directory, 'group': metadata['group'],
+                          'pipeline': value('pipeline'),
                           'start_moveit': value('start_moveit'),
                           'start_planner': value('start_planner'), 'rviz': value('rviz'),
                           'use_fake_hardware': 'false', 'robot_ip': '127.0.0.1:50051'}.items())
@@ -52,9 +55,12 @@ def setup(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('model_directory'),
+        DeclareLaunchArgument('group', default_value='',
+                              description='Planning group in the bundle; required when it holds several'),
         DeclareLaunchArgument('container', default_value='rby1-cumotion-sim'),
-        DeclareLaunchArgument('pipeline', default_value='ompl', choices=['ompl', 'isaac_ros_cumotion']),
-        DeclareLaunchArgument('start_planner', default_value='false', choices=['true', 'false']),
+        DeclareLaunchArgument('pipeline', default_value='isaac_ros_cumotion',
+                              choices=['isaac_ros_cumotion', 'ompl']),
+        DeclareLaunchArgument('start_planner', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('start_moveit', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('rviz', default_value='true', choices=['true', 'false']),
         OpaqueFunction(function=setup),
