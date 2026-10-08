@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from shape_msgs.msg import SolidPrimitive
 
-from rby1_cumotion.attached import attached_spheres, cover_box, cover_cylinder, is_free, MAX_SPHERES
+from rby1_cumotion.executor.attached import attached_spheres, cover_box, cover_cylinder, is_free, MAX_SPHERES
 from rby1_cumotion.model import load_model, prepare, SUPPORTED_MODELS
 
 
@@ -107,7 +107,7 @@ def test_free_parts_are_left_out(bundle):
 def test_free_names_reach_moveit_as_allowed_collisions(bundle):
     """MoveIt checks every path against its own model: the same parts, and the robot links, are allowed there."""
     from moveit_msgs.msg import AllowedCollisionEntry, AllowedCollisionMatrix
-    from rby1_cumotion.attached import allow_touching, free_names
+    from rby1_cumotion.executor.attached import allow_touching, free_names
     _, root = bundle
     parts = [module('gripper_right_body', 'ee_right', (0.12, 0.06, 0.07)),
              module('gripper_right_finger_1', 'ee_right', (0.016, 0.03, 0.06))]
@@ -133,5 +133,6 @@ def test_too_many_spheres_is_refused(bundle):
 
 
 def test_executor_mirrors_attached_modules():
-    source = (Path(__file__).resolve().parents[1] / 'rby1_cumotion' / 'target_executor.py').read_text()
+    source = (Path(__file__).resolve().parents[1] / 'rby1_cumotion' / 'executor'
+              / 'target_executor.py').read_text()
     assert 'ROBOT_STATE_ATTACHED_OBJECTS' in source and 'UpdateLinkSpheres' in source

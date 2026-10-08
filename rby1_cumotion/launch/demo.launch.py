@@ -4,10 +4,10 @@
   ros2 launch rby1_cumotion demo.launch.py group:=left_arm
   ros2 launch rby1_cumotion demo.launch.py hardware:=mock start_executor:=false   # development
 
-See rby1_cumotion/bringup.py.
+See rby1_cumotion/bringup/description.py.
 """
 
-from rby1_cumotion.bringup import launch_description
+from rby1_cumotion.bringup.description import launch_description
 
 
 def generate_launch_description():

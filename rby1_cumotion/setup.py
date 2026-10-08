@@ -21,10 +21,11 @@ setup(
     license='Apache-2.0',
     entry_points={'console_scripts': [
         'prepare_model = rby1_cumotion.model:main',
-        'check_plan = rby1_cumotion.check_plan:main',
-        'benchmark = rby1_cumotion.benchmark:main',
-        'target_executor = rby1_cumotion.target_executor:main',
-        'prepare = rby1_cumotion.prepare:main',
-        'joint_state_relay = rby1_cumotion.joint_state_relay:main',
+        'check_plan = rby1_cumotion.tools.check_plan:main',
+        'benchmark = rby1_cumotion.tools.benchmark:main',
+        'replan_benchmark = rby1_cumotion.tools.replan_benchmark:main',
+        'target_executor = rby1_cumotion.executor.target_executor:main',
+        'prepare = rby1_cumotion.bringup.prepare:main',
+        'joint_state_relay = rby1_cumotion.bringup.joint_state_relay:main',
     ]},
 )

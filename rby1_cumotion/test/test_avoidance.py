@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from shape_msgs.msg import SolidPrimitive
 
-from rby1_cumotion.avoidance import MotionTracker, objects_from_scene, swept
-from rby1_cumotion.execution import (ahead, back_off, resume_from, retime, seconds, slow_to_stop,
-                                     splice, stamp, state_at, times_of)
+from rby1_cumotion.executor.avoidance import MotionTracker, objects_from_scene, swept
+from rby1_cumotion.executor.execution import (ahead, back_off, resume_from, retime, seconds, slow_to_stop,
+                                              splice, stamp, state_at, times_of)
 from test_execution import LIMITS, planned
 
 STEP = 0.05
@@ -101,7 +101,7 @@ def test_a_mesh_obstacle_is_read_with_its_bounding_box():
     from geometry_msgs.msg import Point, Pose
     from moveit_msgs.msg import CollisionObject
     from shape_msgs.msg import Mesh, MeshTriangle
-    from rby1_cumotion.avoidance import MESH, signature, surface_distance
+    from rby1_cumotion.executor.avoidance import MESH, signature, surface_distance
     obj = CollisionObject(id='bracket')
     obj.pose.position.x, obj.pose.orientation.w = 0.5, 1.0
     mesh = Mesh()
@@ -137,7 +137,7 @@ def test_a_moving_obstacle_is_swept_ahead_a_standing_one_is_not():
 
 def test_a_path_planned_from_a_moving_start_is_trimmed_to_where_it_passes_the_start():
     """MotionGen puts its first points about v * 0.07 s behind a moving start."""
-    from rby1_cumotion.avoidance import from_start
+    from rby1_cumotion.executor.avoidance import from_start
     q, v = np.array([0.3, -0.2]), np.array([0.15, -0.1])
     path = q + np.outer(np.linspace(-0.07, 1.0, 44), v)
     trimmed = from_start(path, q)
@@ -147,7 +147,7 @@ def test_a_path_planned_from_a_moving_start_is_trimmed_to_where_it_passes_the_st
 
 
 def test_surface_distance_for_each_shape():
-    from rby1_cumotion.avoidance import surface_distance
+    from rby1_cumotion.executor.avoidance import surface_distance
     at = np.eye(4)
     at[:3, 3] = [1.0, 0.0, 0.0]
     points = np.array([[1.0, 0.0, 0.0], [1.3, 0.0, 0.0], [1.0, 0.0, 0.5]])
@@ -161,7 +161,7 @@ def test_surface_distance_for_each_shape():
 
 def test_a_moving_obstacle_is_compared_with_the_arm_at_the_same_moment():
     """Swept over the whole window it would meet the arm; at matching times it does not."""
-    from rby1_cumotion.avoidance import moving_collision
+    from rby1_cumotion.executor.avoidance import moving_collision
     ball = {'name': 'ball', 'kind': 'sphere', 'dims': [0.05], 'pose': np.eye(4)}
     ball['pose'][:3, 3] = [0.0, -0.5, 1.0]
     v = {'ball': np.array([0.0, 1.0, 0.0])}               # reaches y=0 at t=0.5 s
@@ -173,7 +173,7 @@ def test_a_moving_obstacle_is_compared_with_the_arm_at_the_same_moment():
 
 
 def test_only_copies_that_cover_the_arm_now_are_left_out_of_the_plan():
-    from rby1_cumotion.avoidance import clear_of
+    from rby1_cumotion.executor.avoidance import clear_of
     arm = np.array([[0.0, 0.0, 1.0, 0.05], [0.0, 0.0, 1.1, -10.0]])      # one real sphere, one placeholder
     def ball(y):
         pose = np.eye(4)

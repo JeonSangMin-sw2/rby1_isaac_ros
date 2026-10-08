@@ -135,7 +135,7 @@ def test_ik_patch_declares_what_planner_params_exposes():
 
 
 def test_no_launch_file_restates_a_default():
-    bringup = PACKAGE / 'rby1_cumotion' / 'bringup.py'
+    bringup = PACKAGE / 'rby1_cumotion' / 'bringup' / 'description.py'
     for path in (bringup, LAUNCH / 'planner.launch.py'):
         source = path.read_text()
         assert 'planner_params.declare(DeclareLaunchArgument)' in source, path.name
@@ -164,7 +164,7 @@ def test_every_override_defaults_to_the_config():
 
 def test_one_file_holds_every_section():
     data = settings.read(CONFIG)
-    assert set(data) == {'robot', 'motion', 'impedance', 'tracking', 'avoid', 'planner'}
+    assert set(data) == {'robot', 'reach', 'motion', 'impedance', 'tracking', 'avoid', 'planner'}
     loaded = settings.load(CONFIG)
     assert loaded['robot']['group'] == 'right_arm' and loaded['robot']['driver_namespace'] == 'rby1'
 

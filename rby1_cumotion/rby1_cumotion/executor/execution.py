@@ -7,14 +7,12 @@ speed. That gives the caller direct control: pick a duration, retime to it.
 
 Two driver behaviours shape this module:
 
-* It drops every stream after 1 s without a command (check_stream_safety). A
-  waypoint gap longer than that ends the stream mid-motion, and the rest of the
-  trajectory is then skipped *while the action still reports success*. So the
-  trajectory is resampled to short, even steps, and completion is judged from
-  measured joints, never from the action result alone.
-* It rejects the action unless stream control is on, and the 1 s clock starts
-  when stream control is switched on. So the stream is enabled immediately
-  before sending, not before planning.
+* It drops every stream after 60 s without a command (check_stream_safety), and
+  a trajectory whose stream has gone is skipped *while the action still reports
+  success*. So the trajectory is resampled to short, even steps, and completion
+  is judged from measured joints, never from the action result alone.
+* It rejects the action unless stream control is on. So the stream is enabled
+  immediately before sending.
 """
 
 import math
@@ -28,7 +26,7 @@ import rclpy
 from scipy.interpolate import CubicHermiteSpline, CubicSpline
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from rby1_cumotion.driver import Driver
+from rby1_cumotion.bringup.driver import Driver
 from rby1_cumotion.model import origin
 
 # Well inside the driver's 1 s stream timeout, and fine enough that the SDK's
@@ -45,6 +43,15 @@ DEFAULT_HOLD = 0.5
 # a stream that is already expired: the next trajectory never reaches the robot
 # (measured: 2 of 3 at 0.05 s, none at 0.3 s). Targets sent back to back hit this.
 STREAM_REOPEN_GAP = 0.5
+# How the driver's stream_control answer begins when it opened a channel asked for.
+OPENED = 'Stream channels opened'
+
+
+def stream_channels(joints):
+    """The driver's stream channels (stream_control's parameters) these joints go out on."""
+    prefixes = {'arm': ('right_arm_', 'left_arm_'), 'torso': ('torso_',)}
+    return tuple(channel for channel, starts in prefixes.items()
+                 if any(name.startswith(starts) for name in joints))
 # The parts set_trajectory_impedance takes, in its order.
 IMPEDANCE_PARTS = ('torso', 'right_arm', 'left_arm')
 
@@ -165,8 +172,7 @@ def retime(trajectory, duration, step, limits):
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError('duration must be a positive number of seconds')
     if not 0.001 <= step <= MAX_STEP:
-        raise ValueError(f'step must be in [0.001, {MAX_STEP}] s; the driver drops the '
-                         'stream after 1 s without a command')
+        raise ValueError(f'step must be in [0.001, {MAX_STEP}] s')
     names = list(trajectory.joint_names)
     times = np.array([seconds(point.time_from_start) for point in trajectory.points])
     positions = np.array([point.positions for point in trajectory.points], dtype=float)
@@ -402,12 +408,11 @@ class DriverExecutor:
         self.goal_handle = None
         self.stream_closed = 0.0
         # Set by the node: the set_trajectory_impedance request it wants (or None),
-        # and whether the driver's stream is on already (someone else's, e.g. a head
-        # tracker's -- this executor then leaves it on when done).
+        # and the driver's stream channels the group's joints go out on.
         self.impedance = lambda: None
-        self.stream_is_on = lambda: False
+        self.channels = ('arm',)
         self.applied_impedance = None
-        self.owns_stream = False
+        self.owned = []  # the channels this executor opened, to close when done
 
     def connect(self):
         self.client = self.driver.action(FollowJointTrajectory, 'follow_joint_trajectory')
@@ -419,11 +424,27 @@ class DriverExecutor:
         self.goal_handle = self.result_future = None
         self.progress = 0.0
         self.apply_impedance()
-        # Enable the stream last: its 1 s idle clock starts now.
-        time.sleep(max(0.0, self.stream_closed + STREAM_REOPEN_GAP - time.monotonic()))
-        self.owns_stream = not self.stream_is_on()
-        self.driver.switch('stream_control', True)
+        self.open_stream()
         self.send(trajectory)
+
+    def open_stream(self):
+        """Open the group's stream channels. One that was open already is someone
+        else's (a user's, another node's) and stays open when this executor is done:
+        the driver's answer says which it opened."""
+        time.sleep(max(0.0, self.stream_closed + STREAM_REOPEN_GAP - time.monotonic()))
+        self.owned = [channel for channel in self.channels
+                      if self.driver.switch('stream_control', True, channel).message.startswith(OPENED)]
+
+    def close_stream(self):
+        """Close the stream channels open_stream opened."""
+        if not self.owned:
+            return
+        try:
+            self.driver.switch('stream_control', False, ','.join(self.owned))
+        except Exception as error:  # the driver may already have dropped it
+            self.node.get_logger().warn(f'stream_control off: {error}')
+        self.stream_closed = time.monotonic()
+        self.owned = []
 
     def apply_impedance(self):
         """Hand the driver the impedance setting, when it changed since the last move."""
@@ -498,16 +519,9 @@ class DriverExecutor:
         self.confirm(trajectory, snapshot)
 
     def stop(self):
-        """Cancel whatever runs and switch the stream off, if this executor switched it on."""
+        """Cancel whatever runs and close the stream channels this executor opened."""
         self.cancel()
-        if not self.owns_stream:
-            return
-        try:
-            self.driver.switch('stream_control', False)
-        except Exception as error:  # the driver may already have dropped it
-            self.node.get_logger().warn(f'stream_control off: {error}')
-        self.stream_closed = time.monotonic()
-        self.owns_stream = False
+        self.close_stream()
 
     def execute(self, trajectory, snapshot):
         """Run `trajectory` to the end; `snapshot()` must return current measured positions."""

@@ -22,7 +22,7 @@ mpc 5 and 28 mm, 1.8 s. One step: ik 10 ms, mpc 6.5 ms.
 
 import numpy as np
 
-from rby1_cumotion.avoidance import pose_matrix, quaternion, signature, world_config
+from rby1_cumotion.executor.avoidance import pose_matrix, quaternion, signature, world_config
 
 
 # A target this far from where the last ones said it would be has jumped, not moved.

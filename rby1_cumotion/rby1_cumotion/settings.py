@@ -15,8 +15,24 @@ GROUPS = ('right_arm', 'left_arm', 'right_arm+torso', 'left_arm+torso')
 TRACKING_METHODS = ('mpc', 'ik')
 
 
+PARTS = {'right_arm': 7, 'left_arm': 7, 'torso': 6}  # the parts with a ready pose, and their joints
+
+
 def _between(low, high):
     return lambda v: math.isfinite(v) and low <= v <= high
+
+
+def _ready_pose(value):
+    """robot.ready_pose: joint angles (rad) for every part of PARTS, and nothing else."""
+    unknown = sorted(set(value) - set(PARTS))
+    if unknown:
+        raise ValueError(f'robot.ready_pose: unknown parts {unknown}; it has {", ".join(PARTS)}')
+    for part, count in PARTS.items():
+        pose = value.get(part)
+        if not (isinstance(pose, list) and len(pose) == count and all(
+                isinstance(q, (int, float)) and not isinstance(q, bool) and math.isfinite(q) for q in pose)):
+            raise ValueError(f'robot.ready_pose.{part} needs {count} joint angles (rad), got {pose!r}')
+    return True
 
 
 # section -> name -> (type, validator)
@@ -29,8 +45,24 @@ SECTIONS = {
         'ready_if_straight': (bool, None),
         'straight_elbow': (float, _between(0.0, 1.5)),
         'ready_time': (float, _between(0.5, 60.0)),
+        'ready_pose': (dict, _ready_pose),
         'body_ends_at_tool': (bool, None),
         'free_objects': (list, lambda v: all(isinstance(name, str) for name in v)),
+    },
+    'reach': {
+        'use_torso': (bool, None),
+        'quick_check': (bool, None),
+        'elbow_limit': (float, _between(-1.5, 0.0)),
+        'torso_forward': (float, _between(0.0, 0.5)),
+        'torso_down': (float, _between(0.0, 0.5)),
+        'torso_pitch': (float, _between(0.0, 1.57)),
+        'torso_yaw': (float, _between(0.0, 2.3)),
+        'torso_roll': (float, _between(0.0, 0.79)),
+        'turn_cost': (float, _between(0.1, 100.0)),
+        'side_cost': (float, _between(0.1, 100.0)),
+        'torso_margin': (float, _between(0.0, 0.2)),
+        'torso_time': (float, _between(0.5, 60.0)),
+        'torso_speed': (float, _between(0.01, 2.0)),
     },
     'motion': {
         'duration': (float, _between(0.0, 600.0)),
@@ -63,6 +95,7 @@ SECTIONS = {
     },
     'avoid': {
         'enabled': (bool, None),
+        'plan_in_executor': (bool, None),
         'horizon': (float, _between(0.05, 5.0)),
         'lead': (float, _between(0.1, 2.0)),
         'give_up_after': (float, _between(0.5, 60.0)),

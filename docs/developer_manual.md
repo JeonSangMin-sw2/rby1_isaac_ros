@@ -20,8 +20,8 @@ rby1_ros2_driver ──robot_ip──▶ 시뮬레이터/실기체      cumotion
   /rby1/robot_state, get_parameters ───────────────▶   move_group          계획·장면 전용
   /rby1/follow_joint_trajectory ◀───────────────────   cumotion_planner    GPU
   /rby1/stream_control, robot_power·servo ◀─────────   target_executor     움직이는 유일한 노드
-rby1_examples (15~20, pub_cartesian_pose) ── /rby1/target_pose ──▶ target_executor
-rby1_moveit_scene ── /apply_planning_scene ──▶ move_group ──(질의마다 장면 전체)──▶ cuMotion
+rby1_examples 16, marker_target ── /rby1/<팔>/target_pose ──▶ target_executor
+rby1_moveit_objects ── /apply_planning_scene ──▶ move_group ──(질의마다 장면 전체)──▶ cuMotion
 ```
 
 - **드라이버와 컨테이너는 분리합니다.** 드라이버와 RB-Y1 SDK는 호스트에 두고, 컨테이너에는 드라이버의
@@ -29,37 +29,52 @@ rby1_moveit_scene ── /apply_planning_scene ──▶ move_group ──(질�
 - **시뮬레이터와 실기체는 같은 경로입니다.** 드라이버의 `robot_ip`만 다릅니다.
 - **MoveIt은 계획만 합니다.** 실행은 `target_executor`가 드라이버의 `follow_joint_trajectory`(FJT)로
   직접 보냅니다(§4).
-- **기동은 두 단계입니다**(`bringup.py`). move_group과 cuMotion 플래너는 켜질 때 로봇 모델을 읽으므로, 번들·고정
+- **기동은 두 단계입니다**(`bringup/description.py`). move_group과 cuMotion 플래너는 켜질 때 로봇 모델을 읽으므로, 번들·고정
   자세·팔 움직임을 전부 끝낸 뒤에 켭니다: ① `prepare`(한 번 돌고 종료) → 성공하면 ② 나머지. 실패하면 ②를 켜지 않고
   런치를 끝냅니다. `cumotion.launch.py`와 `demo.launch.py`는 이 모듈의 얇은 래퍼(RViz 기본값만 다름)입니다.
-- **설정은 `config/cumotion.yaml` 한 파일**(`robot` / `motion` / `avoid` / `planner` 구역). `settings.py`와 `planner_params.py`는
+- **설정은 `config/cumotion.yaml` 한 파일**(`robot` / `reach` / `motion` / `impedance` / `tracking` / `avoid` / `planner` 구역). `settings.py`와 `planner_params.py`는
   이름·타입·범위만 갖고 기본값을 두지 않습니다(§7).
 
 #### 모듈
 
 ```
 rby1_cumotion/rby1_cumotion/
-├── model.py              번들 생성·적재, 축 정준화, SDK 캡슐 → 구, 실행용 번들(activate)
-├── planning.py           공유 계획 계층 — 실행 코드 없음
-├── execution.py          재시간화·재샘플, 드라이버 FJT 실행·교체(splice), 측정 관절로 도달 확인
-├── avoidance.py          움직이는 중 장애물: 앞 구간 충돌 검사(cuRobo RobotWorld), MotionGen 재계획
-├── driver.py             드라이버 서비스·액션 접근, 기종·버전·자세 읽기
-├── settings.py           config/cumotion.yaml의 robot·motion·avoid 구역: 이름·타입·범위
-├── planner_params.py     같은 파일의 planner 구역: 이름·타입·범위
-├── bringup.py            런치 본체: prepare → (성공 시) 계획 스택 + 실행기 (+ RViz)
-├── prepare.py            ① 드라이버 확인 → 번들 → 비상정지·고장 → 전원·서보 → 준비 자세 → 실행용 번들
-├── target_executor.py    ② 목표 토픽 → 계획 → 시간 정하기 → 실행   (궤적을 보내는 유일한 노드)
-├── check_plan.py         계획 1회, 움직이지 않음
-├── benchmark.py          N회 측정, 움직이지 않음
-└── joint_state_relay.py  /rby1/joint_states → /joint_states (런치가 실행)
+├── model.py                  번들 생성·적재, 축 정준화, SDK 캡슐 → 구, 실행용 번들(activate)
+├── planning.py               공유 계획 계층 — 실행 코드 없음
+├── settings.py               config/cumotion.yaml의 planner 밖 구역(robot·reach·motion·impedance·tracking·avoid): 이름·타입·범위
+├── planner_params.py         같은 파일의 planner 구역: 이름·타입·범위, 런치 인자
+├── executor/                 목표 실행기와 그 실행기가 쓰는 모듈
+│   ├── target_executor.py    ② 목표 토픽 → 계획 → 시간 정하기 → 실행   (궤적을 보내는 유일한 노드)
+│   ├── execution.py          재시간화·재샘플, 드라이버 FJT 실행·교체(splice), 측정 관절로 도달 확인
+│   ├── avoidance.py          움직이는 중 장애물: 앞 구간 충돌 검사(cuRobo RobotWorld), MotionGen 재계획
+│   ├── tracking.py           추적 모드: 움직이는 목표를 한 걸음씩 따라감 (IK 서보 / MPC)
+│   ├── reach.py              먼 목표를 팔과 몸통에 나눔
+│   └── attached.py           링크에 붙인 모듈을 손의 덮는 구로 바꿈
+├── bringup/                  런치가 띄우는 것과 로봇 준비
+│   ├── description.py        런치 본체: prepare → (성공 시) 계획 스택 + 실행기 (+ RViz)
+│   ├── prepare.py            ① 드라이버 확인 → 번들 → 비상정지·고장 → 전원·서보 → 준비 자세 → 실행용 번들
+│   ├── driver.py             드라이버 서비스·액션 접근, 기종·버전·자세 읽기
+│   └── joint_state_relay.py  /rby1/joint_states → /joint_states (런치가 실행)
+└── tools/                    점검·측정 명령
+    ├── check_plan.py         계획 1회, 움직이지 않음
+    ├── benchmark.py          N회 측정, 움직이지 않음
+    └── replan_benchmark.py   장애물 개수·속도별 재계획 시간 N회 측정, 움직이지 않음 (ROS 그래프 불필요)
 ```
+
+import 경로는 폴더를 따릅니다(예: `rby1_cumotion.executor.avoidance`, `rby1_cumotion.bringup.driver`,
+`rby1_cumotion.tools.benchmark`). 실행 파일 이름(`ros2 run rby1_cumotion <이름>`)과 런치 파일 이름은 폴더와 무관하게 그대로입니다.
+
+폴더로 나눈 것은 10/08입니다(그 전에는 한 폴더에 17개). `settings.py`와 `planner_params.py`를 하나로 합치는 안은 접었습니다:
+두 파일에 같은 이름의 `_between`이 있고, `planner_params`의 함수 이름(`parse`, `declare`, `resolve`, `names`)은 "planner 구역"이라는
+모듈 이름이 있어야 뜻이 통해서, 합치면 쓰는 곳 45군데의 이름을 모두 바꿔야 하는데 얻는 것이 없습니다. `cumotion_artifacts/`의
+10/08 전 실험 스크립트(`whole_body.py`, `torso_share.py`)는 옛 import 경로를 쓰므로 그대로는 돌지 않습니다(기록으로 둠).
 
 #### 코드 규칙 (테스트가 고정)
 
 | 규칙 | 이유 |
 |---|---|
 | `planning.py`에 실행 코드 금지 | `check_plan`·`benchmark`가 로봇을 움직일 수 없다는 보장이 여기 걸려 있음 (AST 검사) |
-| `DriverExecutor`를 쓰는 노드는 `target_executor.py` 하나 | 실행 경로를 하나로 유지 |
+| `DriverExecutor`를 쓰는 노드는 `executor/target_executor.py` 하나 | 실행 경로를 하나로 유지 |
 | rclpy `Node` 속성 이름(`executor`, `handle` 등)을 속성·메서드로 쓰지 않음 | 둘 다 실제로 노드 생성을 깨뜨렸음 (`dir(Node)` 검사) |
 | 한 호출 위치에서 두 심각도로 로그하지 않음 (`(log.error if x else log.info)(...)`) | rclpy가 `Logger severity cannot be changed between calls`로 예외 — 실행기가 첫 FAILED에서 죽었음 |
 | 전원·서보·자세 이동 기능을 여기에 다시 만들지 않음 | `rby1_examples`(01_power_control, 06_zero_pose, 07_joint_command)에 있음 |
@@ -156,7 +171,7 @@ ros2_control(`rby1_hardware`)을 거치면 드라이버가 `hardware_control` �
 
 | 드라이버 동작 (`rby1_ros2_driver.cpp`) | 대응 |
 |---|---|
-| 스트림이 켜진 채 1초간 명령이 없으면 모든 스트림을 끔 | 0.05 s 재샘플(`step` ≤ 0.5). 스트림은 전송 직전에 켬 |
+| 스트림이 켜진 채 **60초**(10/06 전에는 1초)간 명령이 없으면 모든 스트림을 끔 | 0.05 s 재샘플(`step` ≤ 0.5). 스트림은 전송 직전에 켜고 끝나면 끔 — 60초를 기다리지 않음 |
 | 스트림이 끊겨도 FJT가 성공으로 보고할 수 있음 | 완료는 측정 관절로 판정 |
 | 마지막 웨이포인트를 보내자마자 완료 보고 | 끝에 `hold` 0.5 s. 없으면 빠른 동작 6회 중 2회가 0.03~0.055 rad 모자람 |
 | 웨이포인트마다 명령 전송 **후** 구간 시간만큼 잠듦 | 실제 시간이 요청보다 약 15% 김 (미보정) |
@@ -170,8 +185,10 @@ ros2_control(`rby1_hardware`)을 거치면 드라이버가 `hardware_control` �
 | `stream_cartesian`이 지금 자세와 다른 목표를 전부 `IK did not converge`로 거절(1 cm 이동도; 지금 자세 그대로만 통과) | **드라이버 수정** `solve_cartesian_ik()`: SDK `OptimalControl::Solve`의 비용이 J(q̇_old + q̇_new)/2·dt = 자세 오차(사다리꼴)인데, 반복이 직전 q̇을 다음 반복에 넘겨 다음 걸음이 앞 걸음을 되돌림 → 솔버 오차가 w·Δ/dt(1 cm면 100)에서 안 줄어듦. 매 반복 q̇ = 0으로 두고(뉴턴 걸음), 수렴은 솔버 오차 대신 **자세 오차**(0.5 mm, 2 mrad)로 판정 |
 | 같은 IK가 손목이 펴진 특이 자세(준비 자세, `right_arm_5` = 0) 근처에서 손목 두 관절을 서로 반대로 크게 돌림 — 1 mm 노이즈를 6 s 따라가자 `right_arm_6`가 −1.94 rad까지 가고, 이후 해가 1 rad씩 달라 가속도 검사에 전부 거절 | **드라이버 수정**: 시작 관절 근처에 머물게 하는 관절 목표(`q_target`, 가중치 1 — 위치 1000·방향 100 대비)를 추가. 호출마다 찍던 디버그 줄(약 35줄 WARN)은 DEBUG로. 실측: 1 mm 노이즈로 30 s 추종에 거절 1/550, `right_arm_6` −0.4~−0.7 rad |
 | `stream_joint`·`stream_cartesian` 액션 서버가 끝난 goal을 15분 동안 보관 — 50 Hz로 보내면 상태 배열이 수천 개가 되어 Python 클라이언트가 틱마다 30 ms를 씀(추적 모드 16.5 Hz) | **드라이버 수정**: 두 서버의 `result_timeout` 2 s. 추적 모드 50.0 Hz(§6.2) |
-| 스트림 모드의 `robot_joint`·cartesian은 명령 한 번 보내고 `minimum_time`만큼 기다리는데, 그동안 스트림 명령이 없어 1초 타임아웃이 스트림을 닫음 → `minimum_time` > 1 s면 1초 지점에서 멈추고 `kOk` (실측: 3 s 명령이 0.5 rad만 감) | **드라이버 수정**: 대기 루프에서 idle 시계를 갱신 |
+| 스트림 모드의 `robot_joint`·cartesian은 명령 한 번 보내고 `minimum_time`만큼 기다리는데, 그동안 스트림 명령이 없어 (당시) 1초 타임아웃이 스트림을 닫음 → `minimum_time` > 1 s면 1초 지점에서 멈추고 `kOk` (실측: 3 s 명령이 0.5 rad만 감) | **드라이버 수정**: 대기 루프에서 idle 시계를 갱신 |
 | 상태 읽기(`GetState`) 실패 한 번에 `Connection to robot lost`로 노드 종료 — 시뮬레이터가 드물게 `Collision.link2`에 UTF-8이 아닌 문자열을 넣어 protobuf가 응답 전체를 거부(gRPC `UNIMPLEMENTED: No message returned`) | **드라이버 수정**: `get_state_with_retry()`(3회, 5 ms)로 모든 호출 지점 교체(액션 스레드의 예외가 프로세스를 죽이던 것 포함), 읽기 루프는 `state_loss_timeout`(기본 1.0 s) 동안 연속 실패할 때만 종료 |
+| 스트림이 몸(몸통+양팔)·머리·모바일 셋이라, 팔 궤적을 보내는 동안 몸통을 따로 움직일 수 없고 `stream_control on`이 늘 전부를 엶 | **드라이버 수정(10/06)**: 채널 넷 — `arm`(양팔) / `torso` / `mobile` / `head`. `stream_control`의 `parameters`에 열 채널을 적음(`"arm"`, `"arm, torso"`, 비우면 전부). 응답 문구로 결과를 알림: `Stream channels opened: …; already open: …`, 서보가 꺼진 부위의 채널은 아무것도 열지 않고 실패. 실행기는 `stream_channels(계획 그룹 관절)`로 `arm`(몸통이 그룹에 있으면 `torso`도)만 열고, **자기가 연 채널만** 닫음(`OPENED` 문구로 판정). 닫고 0.3 s 안에 다시 여는 요청은 드라이버가 그만큼 기다렸다 엶 |
+| `stream_cartesian` 목표가 한계(속도·가속도·IK)를 넘으면 거절만 하고 직전 명령을 계속 감 | **드라이버 수정(10/06)**: 명령한 부위를 **측정 위치에 세움**(같은 스트림으로 지금 관절을 보냄, 0.5 s에 0.004 rad). 채널은 열어 둠 — 다음 명령은 그대로 받음 |
 
 #### 관절 임피던스와 스트림 소유 (`impedance` 구역)
 
@@ -186,10 +203,10 @@ ros2_control(`rby1_hardware`)을 거치면 드라이버가 `hardware_control` �
 
 #### 드라이버로 보내는 부분은 두 벌 (Python·C++)
 
-계획 뒤 로봇에 보내는 부분이 cuMotion(`execution.py`, Python — cuRobo 때문에 C++ 불가)과 MoveIt 실행기(드라이버 저장소
+계획 뒤 로봇에 보내는 부분이 cuMotion(`executor/execution.py`, Python — cuRobo 때문에 C++ 불가)과 MoveIt 실행기(드라이버 저장소
 `rby1_moveit_executor`, C++)에 따로 있습니다. 한쪽을 고치면 다른 쪽도 맞춥니다:
 
-| 동작 | cuMotion (`execution.py`) | MoveIt (`trajectory.cpp`, `executor.cpp`) |
+| 동작 | cuMotion (`executor/execution.py`) | MoveIt (`trajectory.cpp`, `executor.cpp`) |
 |---|---|---|
 | 0.05 s 균등 재샘플, 끝 정지 | 클램프 큐빅 + 관절 한계 검사 | PCHIP(넘치지 않음) + 한계 안쪽 1e-4 |
 | 끝에 0.5 s 유지 | `with_hold` | `with_hold` |
@@ -199,7 +216,7 @@ ros2_control(`rby1_hardware`)을 거치면 드라이버가 `hardware_control` �
 | 시간값 변환은 총 나노초를 먼저 반올림 | `stamp` | `stamp` |
 | 측정 관절로 도착 확인(`endpoint_tolerance`) | `confirm` | `execute` 끝 |
 
-#### 이동 시간 (`motion_duration`, execution.py)
+#### 이동 시간 (`motion_duration`, executor/execution.py)
 
 경로는 그대로 두고 시간만 늘리거나 줄이므로 경로 위의 모든 속도는 이동 시간에 반비례합니다. 1 s로 한 번 시간을 입혀
 손(tool 프레임)의 최고 선속도·각속도(`ToolChain`: base→tool 체인만 FK)와 관절 속도 비를 구하면, 각 제한이 요구하는
@@ -219,8 +236,8 @@ ros2_control(`rby1_hardware`)을 거치면 드라이버가 `hardware_control` �
   새 FJT는 이전 것을 **선점**하며, 그동안 잡힌 부위의 `robot_joint`·`stream_joint`는 거부됩니다. **양팔을 서로 다른 궤적으로
   동시에** 움직일 수는 없습니다.
 - cuMotion은 한 번에 한 그룹만 계획하고 나머지를 고정하므로 이 방식이 오히려 맞습니다. 그룹 밖 관절이 움직이면 플래너 모델이 틀려집니다.
-- 머리 추적(`rby1_examples`의 `22_marker_tracking`, `follow:=head`)은 `stream_joint`로 머리만 보냅니다. 머리 스트림이 따로라 팔 FJT 중에도 계속 움직입니다
-  ([AprilTag §3](#3-마커-예제-드라이버-저장소-rby1_examples-22-23)).
+- 머리 추적(`rby1_apriltag`의 `head_follow`, `follow_head:=true`)은 `stream_joint`로 머리만 보냅니다. 머리 채널이 따로라 팔 FJT 중에도 계속 움직입니다
+  ([AprilTag §3](#3-마커로-움직이는-노드-head_follow-marker_target)).
 - 부위별 독립 제어가 필요해지면 드라이버에 이미 **`stream_joint`**(부위별, 명령한 부위만 점유)가 있습니다. FJT를 부위별 채널로
   나누는 드라이버 수정은 양팔 동시 계획이 생길 때 검토합니다(cuMotion 플러그인은 `plan_single`만 호출하므로 현재는 불가).
 
@@ -230,8 +247,11 @@ ros2_control(`rby1_hardware`)을 거치면 드라이버가 `hardware_control` �
 1. 드라이버에서 기종·버전 → 번들 선택(`robot.model`을 주면 드라이버와 대조)
 2. `robot_state`: 비상정지(`emo_state`) 또는 major fault면 거부
 3. `robot.enable_robot`이면 `robot_power`·`robot_servo` ON
-4. `robot.ready_if_straight`이면 계획 그룹의 팔 중 팔꿈치(`*_arm_3`)가 `straight_elbow`(0.3 rad) 안으로 펴진 팔을
-   `robot_joint`로 준비 자세(`READY`, 팔꿈치 −1.57)로 옮기고 측정 관절로 확인
+4. `robot.ready_if_straight`이면 펴진 부위를 `robot_joint` 한 번으로 준비 자세(`robot.ready_pose`)로 옮기고 측정 관절로 확인.
+   계획 그룹과 무관하게 **양팔과 몸통**(10/08 사용자 결정; 그 전에는 계획하는 팔만). 펴짐 판정: 팔은 팔꿈치(`*_arm_3`)가
+   `straight_elbow`(0.3 rad) 안, 몸통은 무릎(`torso_2`)이 준비 자세 무릎 각의 절반 미만(준비 자세 몸통이 전부 0이면 몸통은
+   안 움직임). 값은 `cumotion.yaml`에만 있고(`settings._ready_pose`가 부위·개수를 검사), MoveIt 실행기는 같은 값을
+   자기 `config/ready_pose.yaml`에 둠 — 두 저장소가 파일을 공유할 수 없어 두 곳
 5. 자세를 다시 측정해 실행용 번들 생성 → `PREPARED ...` 출력 후 종료 코드 0
 
 `target_executor` (② 단계에서 계획 스택과 함께 기동):
@@ -287,8 +307,8 @@ cuRobo MotionGen은 현재 관절을 IK의 regularization 기준(`retract_config
 
 - MoveIt cuMotion 플러그인이 **질의마다 계획 장면 전체**를 cuMotion에 보냅니다. cuMotion은 상자·구·원통·메시를 cuRobo
   월드로 바꿉니다(구·원통은 메시로). 슬롯 한도 `collision_cache_cuboid`/`_mesh`(기본 20).
-- 장면 도구는 드라이버 저장소 `rby1_moveit/rby1_moveit_scene`(`/apply_planning_scene`), 같은 도메인 어디서든.
-  C++ 패키지(명령행 `scene` + 라이브러리 `rby1_moveit_scene::rby1_moveit_scene`). `scene move NAME --velocity VX VY VZ --time T`는
+- 장면 도구는 드라이버 저장소 `rby1_moveit/rby1_moveit_objects`(`/apply_planning_scene`), 같은 도메인 어디서든.
+  C++ 패키지(명령행 `scene` + 라이브러리 `rby1_moveit_objects::rby1_moveit_objects`). `scene move NAME --velocity VX VY VZ --time T`는
   물체를 `--rate`(기본 10 Hz)로 다시 ADD해 밀고 끝 위치에 둡니다(서비스 클라이언트를 재사용해야 10 Hz가 나옴; 실측 3 s에 30회).
   `/monitored_planning_scene`은 move_group이 4 Hz로 줄여 내보내므로 갱신 주기 측정에는 `/get_planning_scene`을 씀
 - 업스트림 결함(이미지에서 `world_clear.py`로 수정) — 패치 전에는 지운 장애물이 재시작 전까지 남았습니다(0/5):
@@ -302,7 +322,7 @@ cuRobo MotionGen은 현재 관절을 IK의 regularization 기준(`retract_config
   지면(`add_ground_plane`)은 세 번째 결함 덕에 우연히 유지되던 것이라 패치가 명시적으로 다시 넣습니다.
 - nvblox ESDF(`read_esdf_world:=true`)는 미연동.
 - **링크에 붙인 물체(attached collision object)** — MoveIt 플러그인이 넘기는 장면에서 cuMotion(`cumotion_planner.py`)은
-  `world.collision_objects`만 읽으므로 실행기가 직접 넘김(C62 (a), `attached.py`):
+  `world.collision_objects`만 읽으므로 실행기가 직접 넘김(C62 (a), `executor/attached.py`):
   - 번들 그룹 XRDF에 `attached_object` 프레임(`modifiers.add_frame`, 공구 프레임에 고정)과 자리표시자 구 — cuRobo는 XRDF 구 목록에
     있는 링크만 검사함. 플래너는 이 링크에 구 100칸을 잡아 둠(`extra_collision_spheres`). 자기충돌은 공구와 같은 몸체·손목(한
     관절 위) 링크와는 보지 않음
@@ -338,14 +358,14 @@ cuRobo MotionGen은 현재 관절을 IK의 regularization 기준(`retract_config
 - 실행기의 이동 중 검사·재계획·추적은 장면의 상자·구·원통과 **메시**를 읽음(10/02 — 전에는 메시를 건너뜀). 충돌 검사에는 메시
   그대로(cuRobo `Mesh`), 움직이는 장애물의 시간 맞춘 거리 계산에는 그 바운딩 박스를 씀(`objects_from_scene`, `surface_distance`)
 
-### 6.1. 움직이는 중 장애물 회피 (`avoidance.py`, `avoid` 구역)
+### 6.1. 움직이는 중 장애물 회피 (`executor/avoidance.py`, `avoid` 구역)
 
 계획 시점 이후에 생긴 장애물을 처리합니다. **서 있는 장애물은 멈추지 않고 돌아가고, 움직이는 장애물은 경로 위에서 멈춰
 지나가길 기다립니다.** 궤적은 계속 FJT로 보내고(스트리밍 아님), 드라이버가 새 goal로 이전 goal을 선점하는 것을 이용해
 **실행 중 궤적을 통째로 바꿉니다**.
 
 ```
-실행 중 check_period(0.05 s)마다:
+실행 중 check_period(0.1 s)마다:
   now() = 마지막 FJT feedback 시점 + 경과 시간 (feedback을 먼저 처리)
   앞 horizon(0.5 s) 구간을 cuRobo RobotWorld로 충돌 검사 (10점 0.38 ms)
   서 있는 장애물과 충돌 (avoid_once):
@@ -376,12 +396,12 @@ cuRobo MotionGen은 현재 관절을 IK의 regularization 기준(`retract_config
 | 부분 | 내용 |
 |---|---|
 | 검사 월드 | `RobotWorldConfig`(MESH 검사기, `n_meshes`/`n_cuboids` = cache). PRIMITIVE 검사기는 구를 무시해서 MESH + `get_collision_check_world()` |
-| 재계획 | 별도 MotionGen(MESH, `interpolation_dt` 0.025), 시작 속도를 넘김. 실행기 기동 때 워밍업. 속도는 `replan_seeds`·`replan_steps`·`replan_iters` — 기본 4·24·100으로 계획 0.05~0.13 s(cuRobo 기본값 6·32·0이면 0.13~0.20 s). 그래서 `lead` 0.2, `replan_time` 0.15 |
+| 재계획 | 별도 MotionGen(MESH, `interpolation_dt` 0.025), 시작 속도를 넘김. 실행기 기동 때 워밍업. 속도는 `replan_seeds`·`replan_steps`·`replan_iters` — 기본 4·24·50으로 장애물 0개 0.045 s, 1~2개 0.065 s, 3개 0.09 s(§9의 `replan_benchmark`, 10/06). 그래서 `lead` 0.2, `replan_time` 0.15 |
 | 실패 판정 | `IK_FAIL`, `INVALID_START_STATE_*`, `INVALID_QUERY` → 목표까지 길 없음(`no way around the obstacle to the target`). 그 외 실패는 다음 주기에 재시도 |
 | `from_start` | 시작 속도를 주면 MotionGen 경로의 앞 몇 점이 시작보다 v·0.07 s쯤 **뒤에** 있음 → 시작에 가장 가까운 점부터 자르고 그 점을 시작 자세로 고정 |
 | `splice` | `now + step` ~ `t_join`은 기존 궤적 그대로(드라이버가 이미 받은 구간), 그 뒤는 새 경로를 호 길이로 매개화한 CubicSpline, 경계 조건 (t_join 속도, 끝 0) → 교체 지점에서 속도 연속. 관절 속도 한계를 넘으면 시간을 늘림 |
 | 우회 시간 | `detour_time` = max(MotionGen 자체 시간, `motion` 제한이 요구하는 시간). 남은 원래 시간에 맞추지 않음 |
-| 경로 위 제동·후퇴·재개 | `slow_to_stop`·`back_off`·`resume_from`(execution.py): 경로는 그대로 두고 시계만 바꿈(제동은 시계 속도 1→0 선형, 후퇴·재개는 smoothstep/선형 가속). 그래서 되짚는 구간은 이미 서 있는 장애물이 없다고 확인된 경로 |
+| 경로 위 제동·후퇴·재개 | `slow_to_stop`·`back_off`·`resume_from`(executor/execution.py): 경로는 그대로 두고 시계만 바꿈(제동은 시계 속도 1→0 선형, 후퇴·재개는 smoothstep/선형 가속). 그래서 되짚는 구간은 이미 서 있는 장애물이 없다고 확인된 경로 |
 | 움직이는 장애물 | 장면을 `scene_period`마다 읽어 위치 변화로 속도 추정(EMA, 0.01 m/s 미만은 정지물). 새로 나타난 장애물은 두 번째 읽기까지 정지물로 취급됨. 검사는 각 점의 **그 시각** 장애물 위치로(해석적, `moving_collision`), 계획 월드에는 `sweep_time`(1 s) 동안 쓸고 갈 자리의 복사본 4개 — 지금 팔 구에 겹치는 복사본은 뺌(`clear_of`, 없으면 `INVALID_START_STATE_WORLD_COLLISION`) |
 
 - **재계획기 예열**(`warm_replanner`, 기동 시): 한 프로세스의 첫 재계획은 MotionGen 워밍업이 안 거친 경로(시작 속도, 새 목표)를
@@ -429,7 +449,7 @@ cuRobo MotionGen은 현재 관절을 IK의 regularization 기준(`retract_config
 이어 가도 9/9 정지 — 반응 속도가 아니라 새 경로가 장애물의 이동을 모르는 것이 원인(위 표 "가로지르는 상자" 행은 그 측정).
 그래서 움직이는 동안에는 기다리고, 멈추면 정지물로 돌아갑니다(사용자 결정).
 
-### 6.2. 추적 모드 (`tracking.py`, `tracking` 구역, C60)
+### 6.2. 추적 모드 (`executor/tracking.py`, `tracking` 구역, C60)
 
 점대점(목표마다 경로 전체 계획 + FJT)은 교체에 0.2~0.3 s라 초당 3~5회가 한계라, 계속 바뀌는 목표(마커)는 따로 둡니다.
 
@@ -549,7 +569,7 @@ set_tracking(false) → READY, 켰던 스트림만 끔
 ### 7. 플래너 설정
 
 `rby1_cumotion/config/cumotion.yaml`이 **모든 기본값의 유일한 원천**입니다: `robot`(7), `motion`(7), `avoid`(12), `planner`(18).
-`settings.py`(robot·motion·avoid)와 `planner_params.py`(planner)는 이름·타입·범위만 갖습니다. 노드를 따로 실행해도
+`settings.py`(planner 밖 구역 전부)와 `planner_params.py`(planner)는 이름·타입·범위만 갖습니다. 노드를 따로 실행해도
 같은 파일을 읽습니다(`-p config:=`로 다른 파일).
 
 - 런치 인자로 하나씩 덮어쓰기: `ros2 launch rby1_cumotion demo.launch.py trajopt_finetune_iters:=150` (planner 18종,
@@ -587,7 +607,26 @@ ros2_control mock 하드웨어로 계획만 합니다. `prepare`는 로봇을 �
 
 ```bash
 ros2 run rby1_cumotion benchmark --ros-args -p runs:=10 -p output:=/tmp/bench.json
+ros2 run rby1_cumotion replan_benchmark --runs 10 --settings 4,24,50 4,24,100 --output /tmp/replan.json
 ```
+
+`replan_benchmark`는 이동 중 재계획(실행기의 `Avoider`)만 잽니다. 로봇도 런치도 필요 없고 컨테이너에서 돕니다. 팔이
+지나갈 자리에 상자 0~3개를 놓고(정지 / 가로질러 오는 속도별) 조건마다 N회, 성공 수·시간 중앙값과 범위를 냅니다.
+`--settings`는 `replan_seeds,replan_steps,replan_iters`. 처음 계획 시간은 `benchmark`나 실행기의 `EXECUTING planner_time=`으로 봅니다.
+
+10/06 측정(시뮬레이터, RTX 5070, 손 이동 32 cm, 4 cm 상자, 조건마다 10~30회):
+
+| 설정 | 장애물 0 | 1 | 2 | 3 | 비고 |
+|---|---|---|---|---|---|
+| 처음 계획 `trajopt_finetune_iters` 400 (이전 기본) | 254 ms | 264 | 266 | 269 | 3개에서 6번째 계획이 MoveIt 검사에 걸림 |
+| 처음 계획 100 (**기본**) | 142~150 | 147~151 | 148~152 | 150~153 | 80/80 성공 |
+| 처음 계획 100 + `num_trajopt_time_steps` 24 | 132 | 136 | 실패 | 140 | 2개에서 첫 계획이 MoveIt 검사에 걸림 — 채택 안 함 |
+| 재계획 `replan_iters` 100 (이전 기본) | 53 ms | 75 | 75 | 101 | 300회 중 198 성공 |
+| 재계획 50 (**기본**) | 44 | 65 | 66 | 93 | 300회 중 229 성공 |
+| 재계획 `replan_steps` 16 | 50 | 71 | 72 | 실패 | 3개와 빠른 2개에서 0/10 — 채택 안 함 |
+
+재계획의 성공 수는 정지 상자와 0.1·0.3 m/s로 가로질러 오는 상자를 합친 것입니다. 0.3 m/s 상자 3개(복사본 포함 15개)는
+어느 설정에서도 0회 성공이었습니다(실행기는 이때 제동하고 기다립니다). 궤적의 매끄러움은 재지 않았습니다.
 
 다음을 만족하지 않으면 측정을 거부합니다(PID까지 알려줌). 모드는 떠 있는 런치를 따릅니다.
 
@@ -611,6 +650,233 @@ done
 
 - 빈 공간 짧은 이동은 OMPL이 약 3배 빠릅니다. 이 과제로는 cuMotion 채택을 판단할 수 없습니다(장애물 환경 벤치 필요). 측정값은 노션 process에 있습니다.
 
+#### 성능 지표 요약 (10/08, 🟠 시뮬레이터, RTX 5070)
+
+목표(사용자, 10/08): 연산 시간 0.1초 이내(안 되면 0.2초), 정확도 1 mm(안 되면 1.5 mm). 아래는 이 문서 곳곳의 측정값을 그
+기준에 대 본 것. 실제 로봇 값은 없음.
+
+| 항목 | 측정값 | 0.1 s / 1 mm | 0.2 s / 1.5 mm | 출처 |
+|---|---|---|---|---|
+| cuMotion 첫 계획, 상자 0~3개 (MoveIt + 플래너 노드) | 142~153 ms | ✗ | ✓ | §9 `first_plan_2026-10-06` |
+| 같음, `avoid.plan_in_executor: true` | 75~82 ms | ✓ | ✓ | 아래 **단축 후보** ① |
+| cuMotion 이동 중 재계획, 상자 0·1~2·3개 | 44 · 65 · 93 ms | ✓ | ✓ | §9 `replan_benchmark` |
+| cuMotion 실행기 안 계획 (정지 출발, 장애물 없음) | 93 ms | ✓ | ✓ | 전체 모델 실험 |
+| MoveIt 실행기 계획 (OMPL, 상자 1개) | 30~50 ms | ✓ | ✓ | 드라이버 `Dev_page.md` |
+| 몸통 자세 계산 (`reach.posture`) | 약 75 ms | ✓ | ✓ | 팔·몸통 분배 |
+| 몸통을 쓰는 점대점 목표의 준비(자세 3곳 검사 + 계획 2번 + 모델 맞춤 4번 × 0.84 s) | 몸통 출발 전 2.7~2.9 s, 몸통이 멈춘 뒤 팔 출발까지 약 1.9 s (목표 전체 10.5 s) | ✗ | ✗ | 아래 **단축 후보** (처음 적은 "약 2 s"는 모델 맞춤을 0.41 s로 잡은 어림값이었음) |
+| 같음, `reach.quick_check: true` | 몸통 출발 전 0.92~1.02 s, 그 뒤는 같음 (목표 전체 8.7 s) | ✗ | ✗ | 아래 **단축 후보** ② |
+| 점대점 도착 오차 (cuMotion, MoveIt, 몸통 사용 포함) | 0.0~0.3 mm | ✓ | ✓ | 여러 표 |
+| 추적, 이동 중 4~6 cm/s (몸통 없이) | 평균 0.7~1.4 mm | △ | ✓ | §6.2, 튜토리얼 4.7 |
+| 추적, 이동 중 4 cm/s (몸통 사용) | 평균 2.0 mm, 최악 7~14 mm | ✗ | ✗ | 추적 모드 + 몸통 |
+| 추적, 멈춘 뒤 | 0.1~0.4 mm | ✓ | ✓ | 같음 |
+| 마커를 점대점으로 따라갈 때, 4 cm/s | 약 50 mm 뒤처짐 | ✗ | ✗ | 튜토리얼 4.7 (추적 모드를 써야 함) |
+
+기준을 넘는 것은 셋: 첫 계획 시간, 몸통을 쓰는 목표의 준비 시간, 몸통을 쓰는 추적의 이동 중 오차. 줄일 방법은 아래에 조사함.
+
+#### 단축 후보 (10/08 조사 — ①과 ②의 권장안은 옵션으로 넣음, 기본은 꺼짐)
+
+후보마다 10회 이상 쟀습니다. 스크립트와 결과: `~/isaac_ros_ws/cumotion_artifacts/perf_2026-10-08/`(`perf.py` — 로봇·ROS 없이
+cuRobo만, `summary.txt`, `report.json`; `sim_sessions.sh`, `summary_tracking.txt`, `sim/` — 시뮬레이터). 실제 로봇 값은 없습니다.
+
+**① 첫 계획 시간** (지금 기본 경로: MoveIt + cuMotion 플래너 노드, 142~153 ms. 10/08 재측정 151~196 ms, n=12)
+
+| 후보 | 길 밖에 상자 0·3개 (n=12씩) | 길 위에 상자 1·2·3개 (n=12씩) | 성공 | 판단 |
+|---|---|---|---|---|
+| 실행기 안에서 계획 (`reach.use_torso: true`일 때 이미 쓰는 경로. 시도 4번, 그래프 탐색 켬) | 94 · 96 ms (90~100) | 121 · 119 · 120 ms (115~128) | 60/60 | 시뮬레이터 로그 83건 평균 99 ms와 맞음 |
+| 위 + 시도 1번 | 94 · 94 ms | 119 · 119 · 121 ms | 60/60 | 차이 없음 |
+| 위 + **그래프 탐색 끔**, 시도 4번 | **75 · 77 ms** (73~79) | **77 · 77 · 79 ms** (73~80) | 60/60 | 0.1 s 기준 안. 권장 후보 |
+| 그래프 탐색 끔, 시도 1번 | 74 · 76 ms | 77 · 79 · 78 ms | 59/60 (`FINETUNE_TRAJOPT_FAIL` 1) | 시도를 줄이면 실패가 나옴 — 채택 안 함 |
+
+- 모든 경로는 끝점이 목표에서 0.21 mm 안이고 상자와 닿지 않았습니다(계획기와 따로 검사). 경로 길이는 같았습니다(관절 합 1.26~1.28 rad).
+- 한계: 그래프 탐색이 있어야 풀리는 장면(좁은 틈, 사방이 막힌 배치)은 재지 않았습니다. 넣는다면 "그래프 없이 먼저, 실패하면 그래프로 한 번 더"가 안전합니다.
+- 판단: **유지 — 옵션 `avoid.plan_in_executor`로 넣음**(10/08, 사용자 결정. 기본 `false`: 지금까지처럼 MoveIt + 플래너 노드).
+  `true`면 `plan_target`이 `plan_here`로 가고, `plan_here`는 그래프 탐색 없이 먼저(`Avoider.replan(graph=False)`, 시도 4번) 계획한 뒤
+  경로가 없으면 그래프를 켜서 한 번 더 합니다. 목표 자세 자체가 없다는 답(`IK_FAIL`, `INVALID_START_STATE_…`)에는 다시 하지 않습니다.
+  `avoid.enabled`가 `false`인데 켜면 기동 때 거부합니다. `reach.use_torso`와 같이 켜면 몸통 경로의 팔 계획에도 같은 순서가 적용됩니다
+- 🟠 시뮬레이터(`plan_in_executor.yaml`): 팔이 닿는 목표 10개 10/10 `DONE`, `planner_time` 중앙값 77 ms(75~80), 손 오차 0.0~0.2 mm.
+  두 지점 한가운데 상자(튜토리얼 ③)를 두고 왕복 10구간 10/10 `DONE`, 77~82 ms. 목표를 받고 실행을 시작하기까지는 중앙값 93 ms
+  (장면 읽기 포함). 그래프로 되돌아가는 경로는 단위 테스트로만 확인했고 시뮬레이터에서는 한 번도 타지 않았습니다
+
+**② 몸통을 쓰는 목표의 준비 시간** (시뮬레이터 n=10: 목표 → 몸통 출발 2.74~2.90 s, 몸통 이동 3 s, 그 뒤 팔 출발까지 약 1.9 s)
+
+- 시간의 대부분은 **모델 맞춤(`Avoider.relock`) 0.84 s × 4번**입니다(n=96, 범위 0.83~0.96 s). 절반(0.42 s)은 계획 모델, 절반은 충돌 검사 모델을
+  고치는 시간입니다. 자세 계산은 66~70 ms, 검사 자체는 0.7 ms, 계획은 약 0.1 s입니다.
+- 후보 A — **몸통 관절을 푼 충돌 모델을 하나 더 둠**(시작 때 0.5 s, 계획기는 아님): 어떤 몸통 자세든 고치지 않고 0.4 ms에 검사합니다.
+  지금 방식과 같은 판정이 96/96(그중 충돌 34건, 상자를 가슴 앞 22·28·34 cm에 둠)이고 두 모델의 구 위치 차는 0.00 mm였습니다.
+  자세 3곳 검사에 쓰던 맞춤 2번이 빠져 몸통 출발 전 2.7 s → **약 1.0 s**(구성 요소 측정값으로 계산한 것, 통째로 재지 않음)
+- 후보 B — 이동 중 앞 구간 검사까지 그 모델로 바꿈: 맞춤이 계획 모델 쪽 0.42 s만 남아 출발 전 **약 0.6 s**, 몸통이 멈춘 뒤도 0.4 s 줄어듦(계산값).
+  검사 모델을 바꾸는 것이라 이동 중 회피 전체를 다시 검증해야 합니다
+- 어느 쪽도 0.2 s 안으로는 못 갑니다. 팔을 계획하려면 몸통 자세가 박힌 계획 모델을 한 번은 고쳐야 하고(0.42 s), 몸통을 계획 관절에 넣는
+  방식은 위 **전체 모델 실험**에서 더 느렸습니다. 판단: 후보 A **유지 — 옵션 `reach.quick_check`로 넣음**(10/08, 사용자 결정.
+  기본 `false`), 후보 B 보류
+- 구현: 실행기가 기동 때 `<팔>+torso` 그룹의 번들을 `/tmp/rby1_cumotion/active_torso`에 만들고(`torso_model`) `Avoider.unlock`이 그것으로
+  검사 모델을 하나 더 올립니다(0.5 s). `plan_sharing`의 자세 3곳 검사가 `first_hit(locked=몸통 자세)`로 가고, 모델 맞춤은 팔을
+  계획하기 직전(끝 자세)과 몸통이 멈춘 뒤(측정한 자세) 두 번만 남습니다. 장면의 장애물과 손에 붙인 구는 두 검사 모델에 같이 들어갑니다
+- 🟠 확인: 컨테이너에서 `Avoider` 함수로 직접 비교해 같은 답 360/360(자세 36개 × 상자 5가지 × 손에 구를 붙였을 때·아닐 때,
+  `check_unlock.py`). 시뮬레이터(`torso_quick.yaml`, 두 옵션 모두 켬): 몸통을 쓰는 목표 12개 12/12 `DONE`, 손 오차 0.0~0.2 mm,
+  **목표 → 몸통 출발 중앙값 2.73 s → 0.96 s**(0.92~1.02), 목표 하나 10.5 s → 8.7 s. 몸통이 멈춘 뒤 팔 출발까지는 그대로 약 2.0 s.
+  가슴 앞 28 cm에 상자를 두면 먼 목표를 0.2 s 만에 거절하고(`… into the torso's move`) 아무것도 움직이지 않았으며, 상자를 치우면
+  다시 `DONE`. 추적 모드 1회도 전과 같음(이동 중 2.0~2.1 mm). 검사 모델이 쓰는 GPU 메모리는 재지 못했습니다
+
+**③ 몸통을 쓰는 추적의 이동 중 오차** (4 cm/s로 25 cm 나갔다 돌아옴, 10회씩)
+
+| `reach.torso_speed` | 이동 중 평균 | 이동 중 최악 | 멈춘 뒤 |
+|---|---|---|---|
+| 0.30 rad/s (지금) | 1.92 mm (회별 1.67~2.23) | 6.8~8.5 mm | 0.1~0.2 mm |
+| 0.15 rad/s | 1.98 mm (회별 1.65~2.41) | 6.3~14.0 mm | 같음. 다만 한 번은 먼 곳에서 46 mm까지 벌어짐(몸통이 늦어 팔이 한계에 닿음) |
+
+- 몸통을 느리게 해도 오차는 줄지 않았고 최악은 나빠졌습니다. 판단: **제외**. 오차가 몸통 속도에서 오는 것이 아니라는 뜻이지만
+  어디서 오는지는 확인하지 못했습니다(몸통 없이도 같은 속도에서 0.7~1.4 mm). 남은 가설: 목표가 갑자기 출발·정지할 때의 뒤처짐
+  (최악값이 구간 시작에 몰려 있는지 아직 보지 않음), 가슴 기준 변환에 쓰는 몸통 각의 지연
+
+#### 전체 모델 실험 (10/08) — 몸통과 양팔을 한 모델에 넣고, 움직일 부위와 붙잡을 부위를 목표로 정하기
+
+"다 담은 모델을 띄우고 움직일 부위와 자세를 유지할 부위를 결정한다"(사용자 방향, 10/06)를 구현하기 전에 cuRobo를 직접 불러 잰
+것입니다. 로봇도 ROS 그래프도 쓰지 않았고(계획만), 실행기의 재계획과 같은 설정(4·24·50, MESH, 장애물 없음)입니다. 스크립트와 결과:
+`~/isaac_ros_ws/cumotion_artifacts/whole_body_2026-10-08/`(`whole_body.py`, `summary_*.txt`, `report_*.json`).
+
+- 붙잡기 = 그 부위 끝 링크(`ee_left`, `link_torso_5`)에 "지금 자세" 목표를 줌(`plan_single`의 `link_poses`). 관절을 잠그는 것이 아님
+- 과제: 오른손을 준비 자세에서 최대 10×10×15 cm 옮기는 목표 10개(정지에서, 그리고 앞선 이동의 30% 지점에서 그때 속도로)
+
+| 모델 (관절 수) | 붙잡은 부위 | 성공 | 계획 시간 중앙값 (범위) | 다른 부위가 경로에서 벗어난 최대 |
+|---|---|---|---|---|
+| 오른팔 (7) — 지금 방식 | 나머지는 모델에 고정 | 10/10 | 93 ms (92~95) | 0 (계획에 없음) |
+| 양팔 (14) | 왼손 | 10/10 | 102 ms (100~105) | 왼팔 관절 0.016 rad, 왼손 6.6 mm (이동 중 출발: 0.036 rad, 14 mm) |
+| 양팔 (14) | 없음 | 10/10 | 102 ms (98~162) | 왼팔 관절 0.16~0.70 rad, 왼손 6~26 cm |
+| 몸통+양팔 (20) | 왼손, 가슴 | 10/10 | 107 ms (101~109) | 왼손 4.6 mm, 가슴 0.6 mm (이동 중 출발: 왼손 17 mm) |
+| 몸통+양팔 (20) | 왼손 | 10/10 | 106 ms (104~169) | 왼손 3.4 mm, 가슴 2~9 cm(몸통을 씀), 왼팔 관절 0.05~0.21 rad(왼손을 제자리에 두려고) |
+| 몸통+양팔 (20) | 없음 | 10/10 | 110 ms (99~118) | 왼손 4.5~12 cm, 가슴 3~14 cm |
+
+- **양손 동시 목표**(왼손은 거울상): 14축·20축 모두 10/10, 104~108 ms
+- **닿는 범위**(오른손을 앞으로 15~55 cm, 아래로 0~40 cm, 15곳): 팔만 1/15(앞 15 cm만), 몸통을 풀어 둔 20축 **15/15**, 몸통을
+  붙잡은 20축 0/15
+- **메모리**: 플래너 하나에 1.5~1.8 GB(GPU, 12 GB 중), 만들고 데우는 데 9~22초
+- 본 것
+  - 관절 수는 시간에 거의 영향이 없음(7 → 20축에 약 15%). 이동 중 재계획도 0.2초 안
+  - **붙잡지 않은 부위는 가만히 있지 않음**(수 cm~수십 cm). 목표가 없는 부위는 전부 붙잡아야 함
+  - **붙잡아도 정확히 멈추지는 않음**: 끝 링크가 경로 중에 수 mm(이동 중 재계획이면 최대 17 mm) 움직였다 돌아옴. 지금 방식(그룹
+    밖 관절을 모델에 고정)은 정확히 0
+  - **플래너 하나에서 붙잡을 부위를 호출마다 바꿀 수 없음**: cuRobo는 앞선 호출의 링크 목표를 그대로 둠(`link_poses`에서 뺀 링크는
+    마지막으로 받은 자세에 계속 묶임). 처음에 링크 목표 없이 쓴 플래너에 나중에 주면 `changing goal type, cuda graph reset not
+    available` 오류. 그래서 "몸통을 풀어 닿는 범위를 넓힘"과 "몸통을 붙잡음"은 플래너를 따로 둬야 함(각 1.5 GB)
+  - 첫 계획이 지금 거치는 NVIDIA cuMotion MoveIt 플러그인은 손 하나의 자세 목표만 받음 → 이 방식은 첫 계획도 실행기 안에서 직접
+    해야 함
+- 안 잰 것: 장애물이 있을 때의 시간과 성공률, 실제 실행(드라이버 `arm`·`torso` 채널로 20축 궤적), 추적 모드
+- 판단(10/08): **보류**. 대신 "팔과 몸통을 따로 계산하고 움직임을 규칙으로 나눈다"(사용자 제안)를 검토 — 아래 두 확인(`distribute.py`,
+  `summary_relock.txt`, `summary_weights_*.txt`)
+  - **팔 모델에 고정해 둔 몸통 자세를 실행 중에 바꾸기**(`MotionGen.update_locked_joints`): 됨. 한 번에 0.41초(무릎 0.2 → 0.4 → 0.8
+    → 0.2 rad, 3회 모두 0.41초), 바꾼 뒤 cuRobo의 손 위치가 URDF 계산과 0.00 mm 차이, 그 뒤 계획 정상(손 오차 0.1~0.2 mm).
+    플래너를 새로 만드는 것(9~22초) 없이 몸통을 옮긴 자세에서 팔을 계획할 수 있음. NVIDIA 플래너 노드에는 이 기능이 없어(붙인
+    물체 갱신뿐) 그런 계획은 실행기 안에서 해야 함
+  - **팔+몸통을 한 모델(13축)로 풀면 몸통이 거의 다 움직임**: 오른손을 앞으로 15 cm 보내는 데 가슴이 15 cm, 가까운 목표
+    (10×10×15 cm 이내) 10개에서도 가슴이 중앙값 8 cm(최대 14 cm) 움직이고 팔꿈치는 굽힌 채(−1.65 rad). "팔을 먼저 뻗고 모자란
+    만큼만 몸통"과 반대
+  - 그 분배를 관절별 가중치(`cspace_distance_weight`, `null_space_weight`)로 바꿔 보려 했으나 몸통에 10배·100배를 줘도 결과가
+    그대로(100배는 시간만 97 → 195 ms). 가중치로는 분배를 조절하지 못함
+
+#### 팔·몸통 분배 (`executor/reach.py`, `reach` 구역, 10/08) — 팔이 닿지 않는 만큼만 몸통이
+
+위 확인을 바탕으로 구현한 것(사용자 결정: 팔과 몸통을 따로 계산, 팔을 한계까지 뻗고 모자란 만큼 몸통, 안 되면 거절. 몸통 허용
+범위 전방 10 cm·숙임 40°, 모두 YAML). 기본은 꺼짐(`reach.use_torso: false` — 기존 동작 유지).
+
+- **닿는지 판정**: RB-Y1 팔은 어깨(관절 0~2가 한 점)·팔꿈치(3)·손목(4~6이 한 점) 구조라 어깨–손목 거리는 팔꿈치 각만의 함수.
+  손 목표에서 손목 위치가 정해지므로 "손목 자리가 어깨에서 `radius` 안"이면 닿음. `Reach.__init__`이 무작위 자세 5개로 이
+  구조를 확인하고 아니면 거부
+- **팔은 0°가 아니라 −13.3°에서 완전히 펴짐**: 팔꿈치가 어깨–손목 직선에서 31 mm 비켜 있어(위팔 (0.031, −0.276), 아래팔
+  (−0.031, −0.256)) 두 링크가 일직선이 되는 각이 atan(31/276)+atan(31/256). 사용자가 말한 "−5°를 한계로"는 0°가 특이점이라는
+  전제였는데, 그대로 두면 특이점(−13.3°)이 허용 범위 안에 남음 → 기본값을 "완전히 펴지는 각에서 5° 덜 편" −0.319 rad(−18.3°)로
+  두고, 완전히 펴지는 각보다 덜 굽은 값은 기동 때 거부. 이 한계는 실행기 안 cuRobo 모델의 URDF 팔꿈치 상한으로도 들어감
+  (`limit_elbows`) — 닿는 반경 0.5351 m(완전히 펴면 0.5356 m)
+- **몸통 자세**: 굽힘 관절 셋(`torso_1`~`3`)을 격자로 훑어(17³점 × 5단계, 단계마다 폭 1/4, 약 35 ms) 닿게 하는 자세 중 관절
+  이동이 가장 작은 것. 조건: 가슴(`link_torso_5`)이 준비 자세에서 앞으로 `torso_forward`, 아래로 `torso_down` 이내, 숙임
+  `torso_pitch` 이내, 뒤로는 안 감, 관절 한계, 무릎은 준비 자세와 같은 쪽으로만(반대로 꺾이는 해가 나왔었음). `torso_down`
+  10 cm는 사용자가 정한 값이 아니라 추가한 것(없으면 낮은 목표에 깊이 앉는 해가 나옴)
+- **실행기 순서** (`plan_sharing`): 팔만으로 닿으면 그대로 계획. 아니면 ① 몸통 자세 계산(안 되면 `OutOfReach`) ② 모델의 몸통을
+  가는 길 1/3·2/3·끝으로 옮겨 가며(`Avoider.relock`, 0.84초씩 — 계획 모델 0.42초 + 검사 모델 0.42초) 그 자세의 로봇이 장애물·자기 몸과 닿는지 검사 ③ 끝 자세에서 팔
+  계획 ④ 여기까지 되면 몸통 이동(`robot_joint`, 몸통만) ⑤ 멈춘 몸통의 **측정** 자세로 모델을 다시 맞추고 팔을 다시 계획(보낸 값과
+  0.01 rad까지 다를 수 있어 손이 1~2 mm 어긋났음) ⑥ 팔 실행. ①~③에서 실패하면 모델을 되돌리고 거절 — 로봇은 안 움직임
+- **계획은 실행기 안에서**: 몸통이 한 번 움직이면 cuMotion 플래너 노드의 모델(기동 때 자세로 고정)은 틀리므로, `use_torso`일 때는
+  첫 계획도 `Avoider.replan`(정지 출발)으로 함. `metadata['locked_joints']`도 몸통 값을 따라 고쳐 자세 검사(`check_locked`)가 맞게 함
+- 안 한 것: 몸통과 팔의 동시 이동, 좌우로 먼 목표(몸통 회전), 몸통 자동 복귀, 추적 모드와 병행(`set_tracking` 거절), 이동 중 새
+  목표가 몸통을 필요로 할 때(실패로 끝남), 몸통 이동 중의 연속 충돌 검사(세 자세만 봄)
+
+| 확인 (10/08) | 결과 |
+|---|---|
+| 계산만(`test_reach.py`, 실제 모델) | 앞 15 cm까지 팔만, 20~35 cm는 몸통(가슴 전방 4.4~10.0 cm, 숙임 3~40°), 40 cm는 4.4 cm 모자라 거절 |
+| 계획만(`torso_share.py`, 각 10개) | 가까움: 팔만 8·몸통 1~2 cm 2, 모두 계획됨. 멂(20~33 cm): 10/10 몸통+팔, 손 오차 ≤ 1.0 mm, 경로에서 팔꿈치가 가장 펴진 각 −20.4°. 너무 멂(45~60 cm): 10/10 거절 |
+| 🟠 시뮬레이터 실행, 가까운 목표 10개 | 10/10 팔만, 몸통 0.000 rad, 손 오차 0.0~0.2 mm |
+| 🟠 너무 먼 목표 10개(앞 45~70 cm) | 10/10 `FAILED: out of reach …`(0.1초), 몸통·팔 모두 안 움직임 |
+| 🟠 몸통이 필요한 목표 10개(앞 20~33 cm; 6개는 이어서, 4개는 준비 자세에서 새로) | 10/10 `DONE`, 한 목표 약 10초, 손 오차 0.2~1.9 mm(측정 자세로 다시 계획하게 한 뒤 4개는 0.2~0.6 mm), 끝 팔꿈치 −20~−25° |
+| 🟠 몸통이 움직인 뒤 가까운 목표 6개 | 6/6 팔만, 0.1~0.3 mm |
+
+실제 로봇은 미검증. 몸통을 숙였을 때의 균형은 사용자가 준 범위(10 cm, 40°)에 맡기고 따로 검사하지 않음.
+
+**이어서 바꾼 것 (10/08, 사용자 결정 반영)** — 위 "몸통 자세"와 "안 한 것"의 일부를 대체:
+
+- **몸통이 설 자리는 목표로만 정해짐** (`Reach.posture`): 준비 자세에서 팔이 닿는 목표면 준비 자세, 아니면 닿게 하는 자세 중
+  **준비 자세에서 가장 덜 벗어난 것**(전에는 "지금 자세에서 가장 덜 움직이는 것"이라 몸통이 나간 자리에 남았음). 그래서 가까운
+  목표가 오면 몸통이 준비 자세로 돌아옴. `share()`는 지금 자세가 그 자세와 2 mrad 안이면 `None`. 점대점에서는 나갈 때도 돌아올
+  때도 몸통이 먼저, 그다음 팔. 돌아오는 길이 막혔거나 준비 자세에서 팔 계획이 안 되는데 지금 자세에서는 닿으면 몸통을 두고
+  팔만 계획(경고 한 줄)
+- **몸통 회전** (`torso_5`, `reach.torso_yaw` 40°): 탐색이 4관절(13⁴점 × 5단계, 약 0.2초). 회전 1 rad는 굽힘 3 rad로 셈
+  (`COST`) — 같게 세면 정면 35 cm 목표에 숙임 17°·회전 27°가 나와, 숙임으로 되는 것은 숙임으로 하도록. 오른어깨는 몸통 축에서
+  22 cm 옆이라 왼쪽으로 돌리면 앞으로 최대 14 cm 나옴: 정면 도달이 35 → 40 cm로 늘고 몸 안쪽 목표가 됨. **바깥쪽으로는 거의
+  늘지 않음**(어깨가 이미 가장 바깥) — 바깥쪽 25 cm는 되고 30 cm는 0.4 cm 모자라 거절
+- **여유** (`reach.torso_margin` 3 cm): 몸통을 쓸 때 목표를 팔 범위 안쪽으로 그만큼 들여놓음(팔이 한계 끝에서 끝나지 않게).
+  준비 자세에서 닿는지의 판정에는 여유를 두지 않아 그 사이가 완충 구간
+- **누적 오차**: 몸통을 열 번 오가자 손 오차가 0.1 → 1.2 mm로 커졌음. 움직이지 않는 두 롤 관절(`torso_0`, `torso_4`)을 "지금
+  값"으로 보냈더니 매번 0.1 mrad씩 밀려 1 mrad가 쌓인 것 → 그 관절은 기동 때 값으로 보내고(`torso_rest`), 이동 뒤 모델은 몸통
+  여섯 관절 모두 측정값으로 맞춤. 고친 뒤 15번 오가도 0.0~0.1 mm
+- **장애물 좌표계**: 장면의 장애물은 `base` 기준. `--frame link_torso_5`로 넣은 상자도 MoveIt이 넣는 순간의 몸통 자세로 `base`로
+  바꿔 보관하고(`/get_planning_scene`이 `frame "base"`로 돌려줌), 몸통이 움직인 뒤에도 좌표가 그대로임을 확인
+
+| 확인 (10/08, 🟠 시뮬레이터) | 결과 |
+|---|---|
+| 먼 목표(앞 22~30 cm)와 가까운 목표를 번갈아 10개 | 10/10 `DONE`, 손 오차 0.0~0.1 mm, 가까운 목표마다 몸통이 `[0.1, −0.2, 0.1]`로 복귀, 목표당 10.5~10.9초 |
+| 앞 40 cm(회전 필요), 안쪽 40 cm + 앞 20 cm, 바깥쪽 25 cm, 각 뒤 복귀 | 5/5 `DONE`, 0.0~0.1 mm |
+| 앞 50 cm, 바깥쪽 40 cm | 2/2 `FAILED: out of reach …`(0.2초), 아무것도 안 움직임 |
+| 가슴 기준으로 넣은 상자 | `base` (0.8, 0.5, 1.302)로 보관, 몸통 이동 뒤에도 같음 |
+
+**옆 기울임·비용·탐색 방식 (10/08, 이어서)**:
+
+- 자세 벡터가 몸통 여섯 관절 전부(`JOINTS`). 옆 기울임은 `torso_0`(±15°)·`torso_4`(±30°)의 합이 `reach.torso_roll`(30°) 이내.
+  오른손 바깥쪽 40 cm·55 cm가 옆으로 11°·19° 기울여 닿음(회전만으로는 30 cm에서 거절됐었음). 가슴의 옆 이동 거리 한계는
+  두지 않음(사용자가 준 것은 각뿐)
+- "가장 덜 벗어난"의 비용: 회전 `turn_cost` 3, 옆 기울임 `side_cost` 6(숙임 1 기준, YAML)
+- 탐색을 격자에서 표본으로 바꿈(6차원 격자는 13⁶점): 준비 자세 둘레에 정규분포 표본 12000개 × 폭 7단계(0.35 → 0.0015 rad),
+  매번 같은 난수(같은 목표 → 같은 자세), 한 번에 약 75 ms. 정밀도는 수 mm — 여유 6 cm 요구에 6.6 cm가 나오기도 함
+
+**추적 모드 + 몸통 (`reach.Follow`, 10/08)** — 팔 먼저, 모자란 만큼 몸통이라는 같은 원칙으로, 몸통과 팔이 같이 움직임:
+
+- **팔 모델은 그대로 두고 목표를 옮겨 줌**: 아래 "가슴 기준 변환"을 매 틱 적용(`as_modelled()`, 몸통 **명령** 자세 기준 —
+  측정 자세 + 속도 예측으로 해 봤으나 더 나빠 뺌: 이동 중 평균 6~7 mm 대 4 mm). 장애물도 같은 변환으로 옮겨 보여 줌(가슴이
+  2 mm 이상 움직였을 때, 초당 5번까지). 몸통 자신과의 충돌은 기동 때 자세 기준이라 근사
+- **몸통이 설 자리**는 별도 스레드가 최신 목표로 계산(75 ms라 틱 안에 못 함). 미리 나가고 늦게 돌아옴: 준비 자세에서 팔
+  한계까지 여유(`torso_margin`)가 안 남으면 나가서 목표를 여유의 두 배 안쪽에 두고, 준비 자세에서 여유의 두 배가 남아야 돌아옴
+- **자세를 자주 바꾸지 않음**: 지금 자세로 목표가 팔 범위의 1~3 여유 안쪽이면 그대로 둠. 같은 목표에 맞는 자세가 여럿이라
+  물을 때마다 새로 풀면 멈춘 목표 밑에서도 몸통이 계속 움직였고(무릎 관절이 0.18 rad씩 오감), 그때마다 손이 1~2 cm 어긋났음.
+  새로 풀 때는 직전 자세 둘레에서, 직전 자세와의 거리도 비용에 넣어 이어지게 함
+- **몸통 속도**: `torso_speed`(0.3 rad/s) 이내, 목표 자세에 가까워지면 줄이고(`APPROACH` 4 /s), 속도 변화는 0.5초에 최고 속도에
+  이르는 정도로. 한 번에 출발·정지시키면 그 순간 손이 27 mm 어긋났음
+- 매 틱 `metadata['locked_joints']`의 몸통 값을 측정값으로 고쳐 자세 검사가 따라가게 하고, 추적을 끝낼 때 계획용 모델의
+  몸통을 멈춘 자세로 맞춤(`set_torso`). 스트림은 `arm`과 `torso` 채널
+
+| 확인 (10/08, 🟠 시뮬레이터, 장애물 없음) | 결과 |
+|---|---|
+| 추적: 목표가 앞 5 ↔ 30 cm를 4 cm/s로 왕복, 10번 | 나갈 때 손 오차 평균 2.0 mm(번마다 1.7~2.5), 최악 6.6~13.7 mm. 돌아올 때 평균 2.1(1.9~2.2), 최악 6.5~8.2. 먼 곳에서 멈춘 뒤 0.2~0.4 mm, 돌아와 멈춘 뒤 0.2 mm, 몸통은 시작 자세에서 0.0001 rad 이내 |
+| 추적: 앞 35 cm까지 8 cm/s, 1번 | 팔이 한계에 먼저 닿아 `no collision-free joint solution … holding` 뒤 이어 감. 이동 중 평균 5.6 mm, 최악 25.5 mm, 멈춘 뒤 0.1 mm |
+| 추적을 끈 뒤 점대점 4개(몸통 사용 포함)와 당시 예제 `16_target_shuttle` | 모두 `DONE`, 0.0~0.3 mm |
+| 점대점, 옆 기울임 포함 12개(앞 30·45 cm, 바깥 40·55 cm, 안쪽 40 cm, 각 뒤 복귀, 범위 밖 2개) | 10/10 `DONE` 0.0~0.2 mm, 2/2 거절 |
+
+몸통을 쓰지 않는 추적(이동 중 평균 0.7~0.9 mm)보다 이동 중 오차가 큼. 장애물이 있는 추적, 좌우로 움직이는 목표의 추적, 실제
+로봇은 미검증.
+
+**가슴 기준 변환 — 계획 수준 확인**: 팔 모델의 몸통은 한 자세(P0)로 고정이고 바꾸는 데 0.4초라
+50 Hz 루프에서 매번 못 함. 대신 손 목표를 "몸통이 P0에 있다면의 좌표"로 바꿔 모델에 줌 —
+`target' = chest(P0) · chest(P)⁻¹ · target`. 몸통을 숙임 9~25°·회전 −34~+21°(가슴 3.4~9.1 cm 이동)로 둔 10개에서, 그렇게 구한 팔
+관절을 실제 몸통 자세에 넣은 손 위치가 목표와 중앙값 0.10 mm, 최대 0.42 mm, 방향 0.06° 이내(`virtual_target.py`,
+`summary_virtual_target.txt`). 이 확인을 바탕으로 위 `reach.Follow`를 구현
+
 ### 10. 회귀 테스트
 
 ```bash
@@ -628,34 +894,76 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `test_examples.py` | 역할 분리, 환경 불변식, rclpy 속성·로그 심각도 규칙 |
 | `test_execution.py` | 재시간화, 4×4 검증, 드라이버 명령, 실행기 기동 검사, 런치 모드 |
 | `test_planner_params.py` | YAML 원천, 덮어쓰기, 범위, IK 패치 일치 |
+| `test_plan_target.py` | 누가 계획하는지(`avoid.plan_in_executor`), 그래프 없이 먼저·실패하면 그래프로, 몸통 자세 검사 방식(`reach.quick_check`)과 거절 |
 | `test_image.py` | 이미지 레이어 규칙, 패치 |
 | `test_avoidance.py` | 장면 변환, 속도 추적, 쓸기, 표면 거리, 시간 맞춘 충돌, `from_start`, `splice`, 제동·후퇴·재개, `stamp` |
 | `test_motion_validation.py` | 궤적 검증, 고정 관절, 계획 실패 메시지, 워밍업 방향 |
 | `test_attached.py` | 붙인 모듈의 덮는 구(상자·원통 모서리까지), 손 끝·머리·그 밖 분류, `free_objects`로 빼기와 MoveIt 허용 행렬, 구 100개 한도 |
 | `test_tracking.py` | 목표 필터(앞서 겨누기와 최대 거리, 오래된 표본, 끊긴 뒤·건너뛴 뒤 재시작, 정지 판정, 노이즈 억제, 등속·회전 추종), 모드 전환(이동 중 거부), IK 서보 한 걸음(목표를 넘지 않음, 속도·가속도 한계, 작은 변화를 쫓지 않음, 목표 속도 피드포워드), 야코비안 관절 속도(특이점에서 작게), `tracking.method` 검사 |
 
-드라이버 저장소: `rby1_moveit_scene` gtest 13개(C++, `colcon test --packages-select rby1_moveit_scene`), `rby1_examples` 37개(`pub_cartesian_pose` 8, 목표 예제 10, 마커 예제 19), `rby1_moveit_executor` gtest 12 + pytest 3(C++, `colcon test --packages-select rby1_moveit_executor`), `rby1_moveit_objects` gtest 6, `rby1_additional_tools` gtest(카메라 모델). AprilTag는 [AprilTag §5](#5-검증과-테스트).
-`rby1_examples` 전체를 돌리면 기존 예제 파일들의 flake8/pep257 검사 2건이 실패합니다(이번 변경과 무관).
+드라이버 저장소: `rby1_moveit_objects` gtest 25개(C++, `scene` 명령 12 + 모듈 6 + 지점 물체 7, `colcon test --packages-select rby1_moveit_objects`), `rby1_moveit_executor` gtest 12 + pytest 3(C++, `colcon test --packages-select rby1_moveit_executor`), `rby1_additional_tools` gtest(카메라 모델). AprilTag는 [AprilTag §5](#5-검증과-테스트).
+`rby1_examples`에는 예제 전용 테스트를 두지 않습니다(10/02: 공용 파일을 없애면서 삭제, 원래 있던 flake8/pep257/copyright만 남음).
 
-#### 목표 예제 (드라이버 저장소 `rby1_examples` 15~21)
+#### 예제 (드라이버 저장소 `rby1_examples` 15, 16)
 
-튜토리얼 §4의 예제는 `ros2 run rby1_examples NN_moveit_<이름>`입니다(15~21, 기존 예제 번호에 이어서). 22·23은 마커 예제([AprilTag §3](#3-마커-예제-드라이버-저장소-rby1_examples-22-23)).
+10/02에 예제를 정리했고(사용자 결정: `rby1_examples`에는 공용 파일을 두지 않고, 검증용은 저장소에서 뺌), 10/06에
+목표 토픽을 팔마다 나누면서 다시 정리했습니다. 10/08에 16은 목표를 발행만 하는 예제로, 15는 그 목표를 받는 가장 단순한
+실행기로 바꿨습니다. `DONE`을 기다리고 손 오차를 확인하던 옛 16은 예제에서 뺐습니다.
+
+| 지금 (10/08) | 10/02~10/05 | 그 전 | 내용 |
+|---|---|---|---|
+| `15_cartesian_target_move` | `15_target_move`(실행기에 목표 하나) | `15_moveit_move_hand`, `16_moveit_move_to_pose`, `pub_cartesian_pose` | **가장 단순한 타깃 실행기**(10/08부터): `/rby1/<팔>/target_pose`를 듣고 계획 없이 드라이버로 손을 보냄 — `mode:=command`(`robot_cartesian`) 또는 `mode:=stream`(`stream_cartesian`). 답은 `/rby1/<팔>/target_status`(`READY`, `EXECUTING …`, `DONE`, `FAILED: …`). 충돌 검사 없음. 목표 토픽에 이미 구독자가 있으면(다른 실행기) 시작하지 않음. 10/06~10/08에는 파라미터(`offset_xyz`·`xyzrpy`·`matrix`)로 준 목표 하나로 가고 끝났음 |
+| `16_target_shuttle_publisher` | `16_target_shuttle` | `23_marker_shuttle` | 목표를 발행만 하는 예제(10/08부터): `point_a`·`point_b`(x, y, z, roll, pitch, yaw 값 6개)를 `period`초마다 번갈아 `target_topic`으로 발행. `status_topic`의 답은 출력만 함. 목표 두 개만은 `cycles:=1` |
+| `rby1_apriltag`의 `marker_target`(노드·런치) | `17_marker_tracking` `hand.via:=executor` | `22_marker_tracking` | 마커를 팔 목표 토픽으로 계속 보냄 |
+| `rby1_apriltag`의 `head_follow`(`follow_head:=true`) | `17_marker_tracking` `follow:=head` | `rby1_additional_tools`의 C++ 노드 | 머리가 마커를 따라감 |
+| 없음 (검증용이라 예제에서 뺌) | `16_target_shuttle`의 `DONE` 대기·손 오차 확인·`mode:=markers`, `17_marker_tracking`의 드라이버 직접 추종 | `17`~`24`, `moveit_target.py` | 구간마다 `DONE`을 기다리며 손 오차를 재던 왕복, 손을 드라이버 `stream_cartesian`으로 따라가게 하던 비교, 타이밍을 맞춘 장애물 시나리오(`blocked_target`, `box_on_the_way`, `approaching_box`, `box_stops_on_the_path`, `new_target`), 그리퍼·집기 시나리오(`gripper_wall`, `pick_flow`) |
+
+**이 문서의 실측 기록에 나오는 "예제 15~24"와 `/rby1/target_pose`는 당시 번호·이름입니다.**
+10/08 전 기록의 `15`(파라미터로 준 목표 하나, `TARGET_DONE`)와 `16_target_shuttle`(`DONE` 대기, 손 오차 mm, `EXAMPLE_DONE`, `mode:=markers`)도 당시 동작입니다.
 
 - **목표 인터페이스는 플래너와 무관**: 두 실행기(cuMotion `target_executor`, 드라이버 저장소 `rby1_moveit_executor`)가 같은
-  노드 이름 `/rby1_target_executor`, 토픽 `/rby1/target_pose`·`/rby1/target_status`, 파라미터 `duration`·`minimum_time`을 씀.
-  한 도메인에 계획 스택은 하나뿐(각 런치가 다른 `move_group`을 거부)이므로 예제는 어느 쪽인지 몰라도 됨
-- 실행기는 읽기 전용 파라미터 `watches_while_moving`(cuMotion: `avoid.enabled`, MoveIt: `false`)을 둠 — 움직이는 중을
-  보는 예제 18~21은 이것이 거짓이면 안내하고 끝냄. 분기 파라미터 없음
-- 공통 단계는 `moveit_target.py`(`TargetExample`: 목표 보내기·결과 확인, 상자 넣기·밀기·빼기, 준비 자세). 장면은
-  `/apply_planning_scene`을 직접 부름(`rby1_moveit_scene`에 의존하지 않음)
-- 이동 시간은 예제가 바꾸지 않음 — 18~21 전에 `ros2 param set /rby1_target_executor duration …`(튜토리얼)
-- 시작 전 오른팔을 **준비 자세 관절**로(드라이버 `robot_joint`, 0.02 rad 안이면 건너뜀). 7축 팔은 왕복 후 같은 손 자세에서 다른
-  팔 모양으로 돌아오고(MoveIt+OMPL은 1~3 rad까지), 그 차이만으로 장애물 예제 결과가 갈렸음
-- 예제 기하: 가로지르는 상자는 준비 자세 팔뚝 위 7 cm(처음 2 cm 배치는 타이밍에 따라 성공·실패가 갈림), 막힌 목표는 **손목이
+  노드 이름 `/rby1_target_executor`, 토픽 `/rby1/<팔>/target_pose`·`/rby1/<팔>/target_status`(`right_arm`, `left_arm` — 10/06 전에는
+  `/rby1/target_pose` 하나), 파라미터 `duration`·`minimum_time`을 씀. 팔 이름은 SRDF 그룹에서 정함(cuMotion `arm_topics()`).
+  예제 16은 토픽을 파라미터 `target_topic`·`status_topic`으로 받고, 예제 15는 목표 토픽 이름의 팔에서 손 프레임을 정함(`tool_frame()`). 한 도메인에 계획 스택은 하나뿐(각 런치가 다른 `move_group`을 거부)이므로 예제는 어느 쪽인지 몰라도 됨
+- **듣는 팔이 다름(10/08)**: MoveIt 실행기는 양팔 토픽을 모두 듣고(`group` 인자 없음), 한 팔 목표는 그 팔만, 양팔 목표가 같이 오면
+  `both_arms`로 한 번에 계획함. cuMotion 실행기는 기동 때 정한 계획 그룹의 팔만 들음. MoveIt 실행기는 기동 때 펴진 양팔과 몸통을
+  함께 준비 자세로 보냄(몸통 `[0, 0.1, -0.2, 0.1, 0, 0]` — 손이 3 mm 내려감). 자세한 것은 드라이버 저장소 `Dev_page.md`
+- 예제는 각자 한 파일로 완결(01~14처럼). 장애물은 예제가 넣지 않고 `rby1_moveit_objects`의 `scene` 명령으로 넣음 — 튜토리얼 §4의
+  ②~⑥이 그 순서
+- **예제 15도 실행기(10/08)**: 같은 목표 토픽을 듣기 때문에 다른 실행기와 같이 켜면 둘 다 팔을 움직임. 예제 15는 시작할 때 1초
+  기다린 뒤 목표 토픽에 구독자가 있으면 거부함. 움직이는 중에 온 목표는 가장 최근 것 하나만 두었다가 이동이 끝나면 실행
+  (MoveIt 실행기와 같음. cuMotion 실행기는 바로 바꿈). 예제 16은 팔을 기다리지 않으므로 `period`가 이동 시간보다 길어야 함
+- 실행기는 읽기 전용 파라미터 `watches_while_moving`(cuMotion: `avoid.enabled`, MoveIt: `false`)을 둠 — 움직이는
+  중에도 길을 보는 실행기인지 다른 노드가 확인할 수 있음
+- 7축 팔은 왕복 후 같은 손 자세에서 다른 팔 모양으로 돌아오고(MoveIt+OMPL은 1~3 rad까지), 그 차이만으로 장애물 실측 결과가
+  갈렸음. 그래서 장애물 실측은 매번 오른팔을 **준비 자세 관절**로 돌려놓고 시작함(드라이버 `robot_joint`). 예제는 이 단계가 없음
+- 실측에 쓴 장애물 배치: 가로지르는 상자는 준비 자세 팔뚝 위 7 cm(처음 2 cm 배치는 타이밍에 따라 성공·실패가 갈림), 막힌 목표는 **손목이
   갈 자리**의 상자(손 자세가 손목 위치를 정하므로 어떤 팔 모양·플래너로도 못 피함; 선반 배치는 MoveIt 메시 충돌 모델에선 피해 감)
 
-격리 시뮬 실측(각 3회, 번호 예제): cuMotion 15~20 18/18 `EXAMPLE_DONE`, MoveIt 실행기 15~17 9/9, 18~20은 안내 후 종료.
-예제 21(새 목표 교체): 이동 4 s에서 4/4 멈추지 않고 교체, 이동 2 s(`duration 0`)에서 3/3 "멈춘 뒤 서서 계획" — 모두 새 목표 0.2 cm 안.
+격리 시뮬 실측(10/02, 새 예제):
+
+| 확인 | 결과 |
+|---|---|
+| cuMotion: `15`(기본·되돌리기·`xyzrpy`), `16`(상자 없이, 한가운데 상자를 미리 둔 채) | 모두 `DONE`, 구간 끝 오차 0.4~1.1 mm |
+| cuMotion: 손으로 넣는 상자(`duration 10`, `point_b` 35 cm 위, 상자 `[0.29, -0.37, 1.32]`) | 구간 시작 2초 뒤 → `AVOIDING`, `DONE`(끝 4.7 mm). 4·6초 뒤 → `too close`. 한가운데 상자는 1~5초 어느 때 넣어도 `too close`(손목 구가 일찍 닿음, 재계획 0.18~0.25 s가 `lead` 0.2 s를 넘김) |
+| cuMotion: 손으로 미는 상자(`duration 10`, `scene move … --velocity 0 0.1 0 --time 7`) | 0.3·2초 뒤 → `WAITING`·`RESUMING`, `DONE`. 4초 뒤 → `moving obstacle is heading for the arm`. `duration 6`에서는 0.5·2초 뒤 모두 같은 실패 |
+| cuMotion: 이동 중 새 목표(`duration 6`, 3초 뒤 두 번째 `15`) | `REPLACED`, 두 터미널 모두 `TARGET_DONE` |
+| `rby1_moveit_executor`: README 단계 2~6 그대로 | 모두 기대대로(막힌 목표 `FAILED`, 상자 돌아가기 `DONE`, 모듈 붙인 채 왕복 `DONE`) |
+| `17` `hand.via:=driver`(가짜 마커, 위로 6 cm/s) | 정지 0.4 mm, 이동 중 21.7 mm, 다시 정지 0.4 mm. `follow:=both`도 같음(0.6 / 22.7 / 0.4), 마커는 화면 중심 1 mm |
+| `17` `hand.via:=executor`(cuMotion을 막 띄운 뒤) | 정지 0.1 mm, 이동 중 2.9 mm(최대 5.3), 다시 정지 0.1 mm. Ctrl+C에 `tracking mode off` |
+| `17` `follow:=head` | 마커가 화면 중심 1 mm 안 |
+| `16` `mode:=markers`(가짜 마커 7·8) | 4구간 `DONE`, 0.2~0.6 mm. 마커 하나가 없으면 5초 뒤 `EXAMPLE_FAILED: no target_marker_8 …` |
+| 검증용으로 뺀 시나리오(`move_hand`, `blocked_target`, `new_target`, `box_on_the_way` ×3, `approaching_box`, `gripper_wall`) | 모두 `EXAMPLE_DONE` |
+
+이때 본 것:
+
+- **몸통이 조금씩 흘러 오차가 됨**: 시뮬에서 궤적을 여러 번 보내는 동안 `torso_0`·`torso_4`가 0.0027~0.0037 rad 움직였고, 몸통을
+  기동 때 자세로 잠가 둔 cuMotion에서는 그만큼(2~4 mm) 손이 어긋남(막 띄운 직후 0.1 mm → 10분쯤 뒤 2.2~3.7 mm). 원인 미확인
+- **드라이버 `stream_cartesian`은 준비 자세 근처에서 멈출 수 있음**: 마커를 몸 쪽(+y)으로 밀면 `right_arm_4 required
+  acceleration … exceeds limit`으로 거절이 이어져 손이 55~97 mm 뒤에 멈춤(3회 중 3회). 예제는 거절되면 손의 지금 위치에서 다시
+  시작하지만, 드라이버 IK가 같은 걸음에 같은 큰 손목 회전을 내므로 풀리지 않음 — 드라이버 IK 쪽 문제
+- **`17`의 Ctrl+C**: 콜백 안에서 `KeyboardInterrupt`가 나면 rclpy가 `RuntimeError: Unable to convert call argument …`로 끝남
+  (옛 `24`도 같았음) → 신호는 표시만 하고 `spin_once` 루프가 끝나게 바꿈
 
 ### 11. 레퍼런스
 
@@ -690,11 +998,12 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `target_executor` | `config` | `''` (설치된 `cumotion.yaml`) |
 | 〃 | `driver_namespace`, `enable_robot` | 설정 `robot` 구역 |
 | 〃 | `duration`, `minimum_time`, `linear_velocity_limit`, `angular_velocity_limit`, `step`, `hold`, `endpoint_tolerance` | 설정 `motion` 구역 — 실행 중 변경 가능 |
-| 〃 | `target_topic`, `status_topic` | `/rby1/target_pose`, `/rby1/target_status` (노드 이름 `rby1_target_executor`, MoveIt 실행기와 같음) |
+| 〃 | `target_topic`, `status_topic` | 비어 있음 → 계획 그룹의 팔로 정함: `/rby1/right_arm/target_pose`, `/rby1/right_arm/target_status` (노드 이름 `rby1_target_executor`, MoveIt 실행기와 같음) |
 | 〃 | `watches_while_moving` (읽기 전용) | `avoid.enabled` |
 | `prepare` (명령행) | `--config --hardware --model --model-directory --group --driver-namespace` | 설정 `robot` 구역 |
 | `benchmark` | `hardware`, `runs`, `settle`, `output` | `''`(런치 따름), `10`, `0.5`, `''` |
-| `pub_cartesian_pose` | `ref_link`, `target_link`, `offset_xyz`, `matrix`, `wait_for_result`, `timeout` | `base`, `ee_right`, `[0,0,0]`, 미설정, `true`, `120.0` |
+| `16_target_shuttle_publisher` | `target_topic`, `status_topic`, `point_a`, `point_b`, `period`, `cycles` | `/rby1/right_arm/target_pose`, `/rby1/right_arm/target_status`, 준비 자세 손, 그 30 cm 위, `5.0`, `3` |
+| `replan_benchmark` | `--settings SEEDS,STEPS,ITERS`, `--runs`, `--output` | §9 |
 
 #### 알려진 한계
 
@@ -702,7 +1011,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 |---|---|
 | 실기체 | 미검증 (코드 경로는 시뮬레이터와 같음) |
 | 양팔 동시 Cartesian | 불가 — 플러그인이 `plan_single`만 호출 |
-| v1.0 `ee_*` | SDK와 드라이버 URDF가 46.1 mm 다름 → `pub_cartesian_pose`의 현재 자세 기준 offset이 어긋남 |
+| v1.0 `ee_*` | SDK와 드라이버 URDF가 46.1 mm 다름 → 드라이버가 준 손 자세(`get_cartesian_pose`)를 기준으로 만든 목표가 그만큼 어긋남 |
 | 움직이는 장애물 | 돌아가지 않고 기다림. 경로 위 어디에 서도 부딪히면 정지 (§6.1) |
 | `planning failed: INVALID_MOTION_PLAN … MoveIt, checking it against its own robot model, finds it in collision` | cuMotion 모델에 없는 링크(공구 프레임 앞의 그리퍼)가 장애물에 닿는 경로 | ✔ | 그리퍼 모듈을 붙이거나(`config:=gripper.yaml`), 닿아도 되는 부위를 `free_objects`에 |
 | `nothing on ee_right is in cuMotion's model …` | 손 끝에 붙인 모듈이 없음(팔 모델은 `ee`에서 끝남) | ✔ | 위와 같음, 또는 `robot.body_ends_at_tool: false` |
@@ -726,7 +1035,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `ros2 run rby1_cumotion ...`이 `Package not found` | 워크스페이스 빌드 전 | 튜토리얼 2.2 |
 | 컨테이너 프롬프트가 `root@…` | `-u admin` 없이 들어옴 | 나가서 `isaac-ros`로 다시. `isaac-ros`가 root로 들어가면 `~/.bashrc`의 함수를 [env_setup 8.2](env_setup_ubuntu_22_04.md)대로(같은 함수가 두 번 있으면 뒤의 것이 쓰임). 기동 중에 root면 `read_robot`이 원인을 로그에 붙임 |
 | `RTPS_TRANSPORT_SHM Error ... open_and_lock_file failed` 뒤 토픽이 안 옴 | 강제로 끈 ROS 프로세스들의 공유 메모리 잔재 | 호스트에서 `fastdds shm clean` 후 그 노드를 다시 실행 |
-| `Couldn't parse parameter override rule ... Sequence should be of same type` | `pub_cartesian_pose`의 `matrix`에 정수가 섞임. rclpy가 노드 코드 전에 실패 | 모든 값을 `1.0`처럼 소수로 |
+| `Couldn't parse parameter override rule ... Sequence should be of same type` | 예제의 목록 파라미터(`16_target_shuttle_publisher`의 `point_a`·`point_b`)에 정수가 섞임. rclpy가 노드 코드 전에 실패 | 모든 값을 `1.0`처럼 소수로 |
 | 손은 되돌아왔는데 팔 모양이 비틀림 | 팔을 곧게 편 자세(영점)에서 움직임 (§4.1) | `robot.ready_if_straight` 확인(기본 켜짐). 지금 모양은 `robot_joint` 관절 명령으로 |
 
 #### 드라이버 (호스트 터미널)
@@ -736,7 +1045,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `[CONNECTION ERROR] Failed to connect to robot at address ...` | 시뮬레이터가 안 떴거나 `robot_ip` 틀림 | ✔ (드라이버 자체) | 확인 목록을 따름 |
 | `String field 'rb.api.Collision.link2' contains invalid UTF-8` 뒤 종료 | 시뮬레이터가 드물게 깨진 상태 한 프레임 — 수정 전 드라이버는 한 번에 종료 | — | 드라이버 재빌드(`get_state_with_retry`, `state_loss_timeout`) |
 | `State read failed (N in a row …)` | 상태 읽기가 잠깐 실패 | ✔ | 한두 번이면 무시, 1초 넘게 이어지면 연결 끊김 |
-| `[STREAM TIMEOUT] No stream commands received for 1.05 seconds` | 궤적 점 사이 간격이 1 s 넘음(과거 `stamp()` 결함, T76) 또는 실행기가 멈춤 | — | 궤적 시간 간격의 최대값 확인 |
+| `[STREAM TIMEOUT] No stream commands received for 60.xx seconds! Deactivating all streams.` | 스트림 채널을 열어 둔 채 60초 동안 명령이 없음(연 쪽이 닫지 않고 끝남). 10/06 전에는 1초여서 궤적 점 간격이 1 s를 넘으면(과거 `stamp()` 결함, T76) 이동 중에 났음 | — | 다음 명령 전에 채널을 다시 엶. 실행기는 스스로 엶 |
 | `start too far from the robot: joint ... needs X rad/s` (FJT 거부) | 새 궤적의 첫 점이 지금 자세에서 속도 한계로 갈 수 없음 | ✔ | 실행기 쪽 궤적 생성 확인(splice·resume 시작점) |
 | `AVOIDING` 때 팔이 멈칫 | 수정 전 드라이버(점별 사전 충돌 검사, 매번 제어 모드 재설정) | — | 드라이버 재빌드 |
 
@@ -755,7 +1064,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `Group … starts in self-collision … Move the robot to another posture …` | 지금 자세가 충돌 모델상 자기충돌 | ✔ |
 | `… is out of range` / `unknown … settings` / `missing … settings` | 설정 파일 값·이름 | ✔ 항목·파일 경로 |
 
-#### 계획·실행 (`FAILED: …`, 실행기와 `pub_cartesian_pose`)
+#### 계획·실행 (`FAILED: …`, 실행기와 `16_target_shuttle_publisher`)
 
 | 메시지 | 원인 | 로그 안내 |
 |---|---|---|
@@ -781,11 +1090,10 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `FAILED: tracking: the driver refuses stream_joint …` | 1초 동안 `stream_joint`가 전부 거부(궤적·다른 명령이 팔을 잡음, 스트림 닫힘) | ✔ |
 | `FAILED: tracking: no current joint states for 1 s` | 드라이버 관절 상태가 끊김 | ✔ |
 | `the arm is X rad from the MPC command: carrying on from where it is` (경고) | 팔이 명령을 못 따라감(막힘, 한계) — MPC가 측정값에서 다시 시작 | ✔ |
-| `Timed out waiting for a subscriber on /rby1/target_pose -- start a target executor …` (`pub_cartesian_pose`, 예제) | 실행기가 안 떠 있음 | ✔ |
+| `16_target_shuttle_publisher failed: nothing listens on /rby1/right_arm/target_pose after 15 s. Start one of these …` | 실행기가 안 떠 있거나, 그 팔의 토픽을 듣지 않음(cuMotion은 계획 그룹의 팔만) | ✔ |
+| `15_cartesian_target_move failed: /rby1/right_arm/target_pose already has a subscriber: another target executor is running …` | 예제 15를 다른 실행기(cuMotion 기동, `rby1_moveit_executor`)나 그 토픽의 `ros2 topic echo`와 같이 켬 | ✔ |
 | `Driver aborted the trajectory (-1): Could not send the trajectory to the robot: … command stream failed …` | 드라이버 스트림이 만료된 채 다시 열리지 않음(§4) | ✔ |
 | `Driver aborted the trajectory (-2): Limit exceeded: joint … at waypoint 0` | 관절이 한계 값 바로 위에 있음(OMPL이 거기 둠) — MoveIt 실행기는 한계 안쪽 1e-4 rad로 보내도록 수정 | ✔ 드라이버 문구 |
-| `EXAMPLE_FAILED: step N (…): expected DONE, got …` (예제) | 그 단계의 실행기 결과가 기대와 다름 — 뒤에 실행기 메시지가 붙음 | ✔ |
-| `EXAMPLE_FAILED: this example needs a planner that watches the way while the arm moves` | 18~21을 MoveIt 실행기로 | ✔ |
 
 #### AprilTag·마커 예제 ([tutorial_apriltag.md](tutorial_apriltag.md), [tutorial_cumotion.md 4.7](tutorial_cumotion.md))
 
@@ -802,28 +1110,29 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `the intrinsics are for WxH, the image is … (another aspect ratio)` | 보정 파일과 영상의 가로세로 비율이 다름 | ✔ | 같은 해상도로 보정 |
 | 보정 파일을 바꿨는데 마커 거리가 그대로 | 컨테이너의 보정 노드가 처음 받은 카메라 모델을 계속 씀 | — | `apriltag.launch.py` 재기동 |
 | `target_tags.yaml`에서 `target_ids`·`size`를 고쳤는데 그대로(예: `[7, 8]`로 바꿨는데 7번만 나옴, 거리가 `size` 비율만큼 틀림) | 런치를 다시 띄우지 않았거나, 패키지를 `--symlink-install` 없이 빌드해 설치 폴더의 **복사본**을 읽음(10/01 사용자 실습: 소스는 `[7,8]`·0.08인데 실행 중인 값은 `[7]`·0.10) | ✔ 시작 로그 `markers: … target ids … (settings: 경로)` | `rm -rf build/rby1_apriltag install/rby1_apriltag` 후 `colcon build --symlink-install …`, 런치 재기동. 당장은 `ids:=7,8 size:=0.08` |
-| `/target_marker/pose`가 안 옴 | 카메라 토픽이 안 넘어옴(`ROS_DOMAIN_ID`), `width`·`height`가 영상 크기와 다름, 마커 패밀리·번호(`ids:=`·`target_ids`) | — | 컨테이너에서 `ros2 topic hz /camera/image_raw`·`/tag_detections` 확인 |
+| `/rby1/marker/pose`가 안 옴 | 카메라 토픽이 안 넘어옴(`ROS_DOMAIN_ID`), `width`·`height`가 영상 크기와 다름, 마커 패밀리·번호(`ids:=`·`target_ids`) | — | 컨테이너에서 `ros2 topic hz /camera/image_raw`·`/tag_detections` 확인 |
 | 다른 카메라 드라이버를 붙였더니 검출이 안 됨 | Isaac ROS 노드는 **reliable**로 구독 — best-effort 발행자의 영상은 못 받음 | — | 발행자를 reliable로 |
 | 거리가 일정 비율로 틀림 | `size`(검은 사각형 한 변)가 실제와 다름, 또는 보정 없이 `horizontal_fov` 모델 | — | 자로 재서 `target_tags.yaml`의 `size`(또는 `size:=`), 보정 파일 `intrinsics:=` |
 | `… has no apriltag: ros__parameters: size / tag_family …` | 예전 형식의 설정 파일(`target_tag_filter` 구역만 있음) | ✔ | `apriltag:` 구역을 추가하거나 `size:=`·`tag_family:=` |
 | 원거리에서 자세가 떨림 | 창이 짧음 | — | `target_tags.yaml`의 `window_size` 8~10 |
-| `no transform link_head_2 <- camera_optical_frame … run camera.launch.py on this host` | 장착 위치 TF 없음 | ✔ | |
-| `head: no marker on /target_marker_7/pose: is it in view …` | 마커 좌표가 안 옴: 마커가 안 보임, 번호·패밀리·크기 불일치, 카메라·검출이 안 떠 있음 (전에는 아무 말 없이 머리만 안 움직였음) | ✔ | RViz Marker view에서 마커 위에 축이 얹히는지 |
-| `head: the robot is not enabled (control manager idle) …` | 전원·서보를 안 켬 | ✔ | `ros2 run rby1_examples 06_zero_pose` |
-| `head: no head angles yet: is the driver publishing /rby1/joint_states?` | 드라이버 없음 | ✔ | |
-| `hand: /rby1_target_executor/set_tracking is not available …` | cuMotion 기동이 없음(MoveIt 실행기는 추적 모드가 없음) | ✔ | cuMotion 기동 후 `READY` |
-| `hand: tracking mode refused: a move is in progress …` | 점대점 이동 중 | ✔ | 끝나면 예제가 다시 요청 |
-| `hand: no marker target_marker_7 on TF in base yet …` / `EXAMPLE_FAILED: no target_marker_12 on TF in base within 20 s …` | 마커가 안 보임, `ids`에 그 번호가 없음, 로봇 TF(cuMotion 기동)나 카메라 장착 TF(`camera.launch.py`)가 없음 | ✔ | `ros2 run tf2_ros tf2_echo base target_marker_7` |
-| `23_marker_shuttle`이 `FAILED: planning failed …`로 끝남 | 마커 아래 지점이 닿지 않거나 장애물·로봇 몸과 겹침 | ✔ | `offset`, 마커 위치 |
-| `/rby1/stream_control is not available` / `/rby1/stream_joint is not available` | 드라이버 없음 | ✔ | |
-| `stream_control refused: … power on and servo the robot, and turn gravity compensation off` | 전원·서보 꺼짐, 중력 보상 중 | ✔ | `06_zero_pose` 등으로 켬 |
-| `head command rejected: …; retrying in 0.5 s` | 팔 궤적 실행 중, 다른 명령이 아직 움직이는 중, 스트림 닫힘 | ✔ | 드라이버 로그의 `[STREAM REJECTED]`가 이유 |
+| 머리가 마커 반대쪽이나 다른 축으로 돎 | `head_follow`는 장착 TF를 읽지 않음(10/08부터). `camera_rpy`가 실제 장착 회전과 다름 | — (시작 로그 `camera rpy […]`에서 쓰는 값 확인) | `head_follow: camera_rpy`를 `camera_mount.yaml`의 `rpy`와 같게 |
+| `[head_follow]: start_zone (…) must be larger than safe_zone (…) …` / `… must be positive (…), got … ` / `camera_rpy needs 3 values …` / `lower_limits[…] (…) must be below upper_limits[…] …`로 시작하자마자 끝남 | `head_follow:` 설정값이 맞지 않음: `start_zone` ≤ `safe_zone`, `safe_zone`·`start_zone`·`dwell`·`speed`·`rate`가 0 이하, `camera_rpy`가 3개가 아님 | ✔ | `target_tags.yaml`의 그 값을 고치고 런치 재기동 |
+| 마커가 가운데가 아닌데 머리가 가만히 있음 | 마커가 안전 구역(`safe_zone`) 안이거나, 두 구역 사이에서 `dwell`이 아직 안 지남 — 정상 | — (따라가기 시작하면 `following: …`) | 더 빨리·더 가운데로: `start_zone`·`dwell`·`safe_zone`을 줄임 |
+| `[head_follow]: no marker yet …` / `[marker_target]: right_arm: no marker 7 yet …` (5초마다) | 마커 좌표가 한 번도 안 옴: 마커가 안 보임, 번호·패밀리·크기 불일치, 카메라가 안 떠 있음 | ✔ | RViz Marker view에서 마커 위에 축이 얹히는지 |
+| 런치가 `marker_target follows markers the filter does not keep: …` / `the head is to follow marker N, which the filter does not keep …`로 끝남 | 팔·머리가 따라갈 마커가 검출 목록에 없음 | ✔ | `ids:=7,8` 또는 `target_ids`, 안 쓰는 팔은 `marker_id: -1` |
+| `[head_follow]: marker seen but no head angles yet …` | 드라이버 없음 | ✔ | |
+| `[head_follow]: the driver did not open the head's stream channel: …` | 전원·서보 꺼짐(머리 서보), 중력 보상 중 — 드라이버 응답이 뒤에 붙음 | ✔ | `ros2 run rby1_examples 06_zero_pose` 등으로 켬 |
+| `[head_follow]: command refused: …; retrying in 0.5 s` | 궤적이 머리를 잡음, 머리 채널이 닫힘(60초 무명령, 다른 프로그램이 닫음) — 다시 열고 이어 감 | ✔ | 드라이버 로그의 `[STREAM REJECTED]`가 이유 |
+| `[marker_target]: right_arm: no target executor listens on /rby1/right_arm/target_pose` | 실행기가 안 떠 있거나 그 팔을 듣지 않음(cuMotion은 계획 그룹의 팔만 — 왼팔은 `group:=left_arm`) | ✔ | 실행기 기동 후 `READY`. 뜨면 그때 마커로 첫 목표를 보냄 |
+| `[marker_target]: … marker 7 is seen but its place in base is unknown …` | 로봇 TF(실행기 런치)나 카메라 장착 TF(`camera.launch.py`)가 없음 | ✔ | `ros2 run tf2_ros tf2_echo base target_marker_7` |
+| 마커를 조금 움직였는데 손이 안 따라옴 | 직전 목표에서 `min_move`(1 cm) 미만 | — | 정상. 계속 따라가게 하려면 추적 모드 + `min_move:=0.0`(튜토리얼 4.7) |
+| `/rby1/stream_control is not available …` / `stream_joint is not available …` | 드라이버 없음 | ✔ | |
 | 드라이버 `[STREAM REJECTED] stream_joint ignored: another command on the stream is still moving other parts.` | 머리 추적 중 `robot_joint` 등 다른 부위 명령이 움직이는 중 — 끝나면 머리 추적이 이어 감 | ✔ | |
-| 정지 이미지(`camera:=file`)로 마커가 가운데가 아니면 머리가 한계까지 감 | 영상이 머리를 따라 바뀌지 않아 오차가 줄지 않음 — 정상 | — | 가운데 마커 이미지로 확인 |
+| 정지 이미지(`camera:=file`)로 마커가 안전 구역 밖이면 머리가 한계까지 감 | 영상이 머리를 따라 바뀌지 않아 오차가 줄지 않음 — 정상 | — | 가운데 마커 이미지로 확인 |
 
 #### 알아 둘 것 (튜토리얼에서 옮김)
 
-- v1.0 기종은 드라이버가 계산하는 손 위치가 cuMotion 모델과 46 mm 다름 → `offset_xyz` 대신 `matrix` (T48)
+- v1.0 기종은 드라이버가 계산하는 손 위치가 cuMotion 모델과 46 mm 다름 → 드라이버(`get_cartesian_pose`)로 읽은 손 자세에서 만든 목표는 그만큼 어긋남 (T48)
 - 실제 이동 시간은 계산보다 약 15% 김 (T42)
 - 양팔을 동시에 서로 다른 목표로 움직일 수 없음 (한 번에 한 그룹)
 - 기동 로그의 `No 3D sensor plugin(s) defined for octomap updates` ERROR는 정상 (T7)
@@ -840,8 +1149,8 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 |---|---|---|---|
 | 호스트 | `rby1_additional_tools` (드라이버 저장소) | `camera.launch.py` → `camera_publisher` | 웹캠·파일(OpenCV) 또는 RealSense 드라이버 → `/camera/image_raw`, `/camera/camera_info`. 장착 위치 TF `link_head_2 → camera_link → camera_optical_frame` |
 | 컨테이너 | `rby1_apriltag` (이 저장소) | `apriltag.launch.py` | `component_container_mt` 안에 `RectifyNode`(`output_width`·`output_height` = `width`·`height`) → `AprilTagNode`(`size`, `tag_family`) → `/tag_detections`, 그리고 `target_tag_filter` |
-| 호스트 | `rby1_examples` (드라이버 저장소, Python) | `22_marker_tracking` | 손: TF `base → target_marker_<id>` → 손 목표 `/rby1/target_pose`(추적 모드, §6.2). 머리: `/target_marker_<id>/pose` → 드라이버 `stream_joint`(머리만) |
-| 호스트 | `rby1_examples` | `23_marker_shuttle` | TF `base → target_marker_<id>` 두 개 → 점대점 목표 `/rby1/target_pose` 왕복 |
+| 컨테이너 | `rby1_apriltag` | `apriltag.launch.py follow_head:=true` → `head_follow` | `/rby1/marker_<id>/pose` → 드라이버 `stream_joint`(머리만, 채널 `head`) |
+| 컨테이너 | `rby1_apriltag` | `marker_target.launch.py` → 위 전부 + `marker_target` | 팔마다 `/rby1/marker_<id>/pose` → TF로 `base`에 놓고 오프셋 → 손 목표 `/rby1/<팔>/target_pose`. 로봇은 실행기가 움직임 |
 
 - **카메라는 호스트에 둡니다.** 컨테이너에 장치 마운트·카메라 드라이버가 없고, 카메라를 바꿔도 이미지를 다시 만들지 않습니다.
   NVIDIA 패키지는 apt(§3 이미지). NITROS 무복사는 컨테이너 안(보정 → 검출)에서만 쓰이고, 호스트 → 컨테이너는 일반 ROS 메시지입니다
@@ -854,7 +1163,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
   시간(구독자), 프레임의 실제 노출 시간(자동 노출), 장치 타임스탬프 간격(USB·다른 프로그램). 전송 자체는 문제가 아니었음: 같은
   파이프라인(호스트 발행 → 컨테이너 보정 + 구독자 3개)에 1280×720 파일 영상을 넣으면 30.1 Hz, 최대 간격 37 ms, UDP 버퍼 오류 0
 - **RViz**: `camera.launch.py rviz:=true`가 `config/camera.rviz`로 RViz를 띄움 — Image(영상), Camera(영상 위에 TF 축을 겹침:
-  `camera_info`로 투영하므로 마커 위에 `target_marker_<id>` 축이 얹히면 검출·보정이 맞는 것), TF, Pose(`/target_marker/pose`).
+  `camera_info`로 투영하므로 마커 위에 `target_marker_<id>` 축이 얹히면 검출·보정이 맞는 것), TF, Pose(`/rby1/marker/pose`).
   합성 영상(태그 7·12)으로 확인: 두 마커 위에 축, 3D에서 0.47 m 앞. 검출 결과를 그려 넣은 영상 토픽은 따로 만들지 않음
 - 마커 설정은 `config/target_tags.yaml` 한 파일: `apriltag` 구역(`size`, `tag_family` — Isaac `AprilTagNode`로)과
   `target_tag_filter` 구역. 런치가 파일을 읽어(`marker_settings`) 노드 파라미터로 넘기고 `markers: tag36h11, black square 0.1 m`를
@@ -862,7 +1171,9 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
   설정 파일만 보면 크기를 어디서 정하는지 알 수 없었음
 - 마커의 3차원 자세는 깊이가 아니라 **네 꼭짓점의 화소 위치 + 실제 크기(`size`) + 카메라 모델**로 계산(PnP). 크기는 노드에
   하나뿐이라 함께 쓰는 마커는 같은 크기여야 함
-- **`rby1_apriltag`는 마커를 찾아 좌표를 내는 데까지**. 그 좌표로 로봇을 움직이는 것은 예제(`rby1_examples`)
+- `rby1_apriltag`는 마커를 찾아 좌표를 내고, 켜면(`follow_head`, `marker_target.launch.py`) 그 좌표로 머리를 돌리거나 팔 목표를
+  보냅니다(10/06 사용자 결정 — 그 전에는 좌표까지만 내고 움직이는 것은 예제 17이었음). 팔을 직접 움직이지는 않습니다: 목표만 내고
+  실행기가 계획·실행합니다
 
 ### 2. 대상 마커 필터 (`target_tag_filter`)
 
@@ -873,32 +1184,88 @@ Python에서 C++로 옮겼고(`src/target_tag_filter.cpp`, 계산은 `src/pose_a
   역변환(예: 마커 기준 카메라)한 뒤에 평균하면 작은 각도 노이즈가 거리만큼 곱해진 위치 오차가 섞이므로, 뒤집기 전 카메라 기준에서 평균합니다
 - **좌표계 이름**: Isaac ROS AprilTag는 검출마다 붙은 `pose.header.frame_id`를 **비워 둡니다**(배열 헤더에만 카메라 프레임).
   Python판은 빈 이름을 그대로 발행해 TF 조회가 안 됐습니다 → 비었으면 배열 헤더 값을 씀(`detection_frame()`)
-- 출력: `/target_marker/pose`(모든 대상을 차례로), `/target_marker_<id>/pose`, TF `<카메라 프레임> → target_marker_<id>`
+- 출력: `/rby1/marker/pose`(모든 대상을 차례로), `/rby1/marker_<id>/pose`, TF `<카메라 프레임> → target_marker_<id>`
+- **토픽 이름(10/08)**: 로봇 토픽을 `/rby1/` 아래로 모으면서 `/target_marker/pose` → `/rby1/marker/pose`, `/target_marker_<id>/pose` →
+  `/rby1/marker_<id>/pose`로 바꿈. TF 이름(`target_marker_<id>`)은 그대로. 전에는 `target_frame_prefix` 하나가 TF와 번호별 토픽 이름을
+  같이 정했는데, 이제 TF는 `target_frame_prefix`(`target_marker`), 번호별 토픽은 `marker_topic_prefix`(`/rby1/marker`)로 나눔.
+  `head_follow`·`marker_target`의 `marker_prefix`도 `marker_topic_prefix`로 바뀜(같은 기본값). 빌드만 했고 토픽을 띄워 확인하지는 않음
 
-### 3. 마커 예제 (드라이버 저장소 `rby1_examples` 22, 23)
+### 3. 마커로 움직이는 노드 (`head_follow`, `marker_target`)
 
-마커 좌표로 로봇을 움직이는 것은 Python 예제입니다. 처음에는 머리 추적이 `rby1_additional_tools`의 C++ 노드, 손 추종이
-`rby1_apriltag`의 C++ 노드 `marker_target`이었는데, 예제 성격이라 `rby1_examples`로 옮겼습니다(로직은 같음). 공통 계산은
-`marker.py`(마커 TF 읽기 `seen`, `hand_target`, `inside`, `moved`), 파라미터는 `--ros-args -p`, 기본값은 각 파일 맨 위.
+10/06에 마커로 로봇을 움직이는 것을 `rby1_apriltag`의 C++ 노드 둘로 옮겼습니다(사용자 결정: "apriltag를 팔 목표로 바꾸는 노드를
+만들고 launch에 묶는다", 예제 17의 머리 추적은 `follow_head` 플래그로). 그 전까지는 Python 예제 `17_marker_tracking`이었습니다.
+아래 소제목의 실측 가운데 `17`·`22`·`23`·`24`는 당시 번호입니다.
 
-| 예제 | 하는 일 |
-|---|---|
-| `22_marker_tracking` | `follow:=hand`(기본) 손이 마커를 따라감 / `head` 머리가 따라감 / `both`. 한 노드에 `Hand`·`Head` 두 부품 |
-| `23_marker_shuttle` | 두 마커의 `offset`(기본 `base` z −10 cm) 지점을 `cycles`번 왕복(점대점). `moveit_target.py`의 `run`·`go`를 그대로 씀 |
+| 노드·예제 | 켜는 법 | 하는 일 |
+|---|---|---|
+| `head_follow` | `apriltag.launch.py follow_head:=true`, 또는 설정 `head_follow: enabled: true` | 마커가 안전 구역을 벗어나면 머리가 따라가 다시 안에 둠 |
+| `marker_target` | `marker_target.launch.py`(검출 포함, `follow_head`도 받음) | 팔마다 마커 + 오프셋을 손 목표 토픽으로 |
 
-#### 머리 (`22_marker_tracking`의 `Head`)
+파일: 머리 추적은 헤더 하나와 소스 하나 — `include/rby1_apriltag/head_follow.hpp`, `src/head_follow.cpp`(10/08, 그 전의
+`head_look.hpp`·`head_look.cpp`는 없앰). 헤더에 ROS 없는 로직(`head_from_optical`, `look_error`, `step_toward`, `FollowSettings`,
+`HeadFollower`), 소스에 그 구현과 노드 `HeadFollow`·`main`. 테스트 `test/test_head_follow.cpp`는 같은 소스를
+`HEAD_FOLLOW_NO_MAIN` 정의로 다시 컴파일해 로직만 링크합니다(노드·`main`·ROS 헤더는 `#ifndef HEAD_FOLLOW_NO_MAIN` 안).
+손 목표 계산은 `hand_target.cpp`(`hand_point`, `target_values`), 노드는 `marker_target.cpp`. 설정은 `target_tags.yaml`의
+`head_follow`·`marker_target` 구역.
 
-- **조준 오차**: 마커 위치를 TF의 **회전만** 써서 `link_head_2` 축으로 옮긴 방향 `d`에서 pan = atan2(d_y, d_x) → `head_0`(z축),
-  tilt = −atan2(d_z, √(d_x²+d_y²)) → `head_1`(y축, +가 아래). 회전만 쓰므로 "카메라에서 본 방향"이고, 오차가 0이면 마커가
-  영상 가운데입니다. 이동까지 넣어 `link_head_2` 원점에서 조준하면 카메라가 4 cm 위에 있어 0.32 m 앞 가운데 마커에도 tilt
-  오차 −0.116 rad가 남아 머리가 한계까지 올라갔습니다(처음 구현)
-- **제어**: 마커가 올 때마다 목표 = 측정 머리 각 + `gain` × 오차(`deadband` 이하는 그 축 유지), 범위로 자름. `rate` Hz 타이머가
-  명령을 목표 쪽으로 `max_speed`/`rate`씩 옮겨 `stream_joint`(머리만, `minimum_time` = 1/`rate`)로 보냄. 영상 지연은 보정하지
-  않으므로 `gain` < 1
-- **정확도**: 남는 오차는 `head.deadband` 이내 — 0.02 → **0.005 rad**(0.3°, 0.8 m 앞에서 화면 중심 4 mm)로 줄임. 실측: 가짜
-  마커 (0.5, 0.3) → (0.495, 0.298), (−0.4, −0.2) → (−0.396, −0.198) rad
-- **상태**: 대기 → 추적 → (`lost_timeout`) 멈춤 → (`return_after`) 원위치 → 대기. 대기에서는 명령을 보내지 않으므로 드라이버가
-  1초 뒤 스트림을 닫습니다
+#### 팔 목표 (`marker_target`)
+
+- **입력은 필터의 `/rby1/marker_<id>/pose`**(카메라 좌표계, 깊이 1 — 밀린 표본을 쌓지 않음). 그 영상 시각의 TF로 `frame`(`base`)에
+  옮기고(100 ms까지 기다림, 못 구하면 그 표본은 버리고 `where … is unknown` 경고) `<팔>.offset`을 더한 점이 손 목표
+- **손 방향은 첫 목표 때 한 번 읽어 고정**(`<팔>.tool_frame`의 `frame` 기준 회전). 마커 방향은 쓰지 않음 — 마커가 조금 기울어도
+  손목이 돌지 않게
+- **보내는 조건**: 직전에 보낸 점에서 `min_move`(1 cm) 이상 움직였고, 그 토픽을 듣는 실행기가 있을 때. 실행기가 없으면
+  `no target executor listens on …`을 알리고 기다림(실행기가 뜨면 그때의 마커로 첫 목표). 점대점 실행기는 이동 중에 온 목표로
+  경로를 바꾸므로(§6.1) `min_move`가 떨림에 의한 재계획을 막음. 추적 모드(§6.2)에서는 `min_move:=0.0`으로 표본마다 보냄
+- **팔**: `right_arm`, `left_arm`. `marker_id`가 −1이면 그 팔은 쓰지 않음. 런치는 팔의 마커가 검출 목록(`ids`)에 없으면
+  `marker_target follows markers the filter does not keep: …`로 끝냄 — 조용히 안 움직이는 것을 막음. 마커가 한 번도 안 오면
+  5초마다 `no marker 7 yet …`
+- 실측(시뮬, 가짜 마커, 10/06): cuMotion 점대점 — 정지한 마커에 0.0 mm, 4 cm/s로 움직이는 동안 약 55 mm 뒤, 멈춘 뒤 2.3 mm.
+  추적 모드 + `min_move:=0.0` — 움직이는 동안 평균 0.9 mm. MoveIt 실행기 — 정지한 마커에 0.9 mm. 실제 카메라는 미검증
+
+#### 머리 (`head_follow`, 옛 `17_marker_tracking`의 `Head`)
+
+- 채널: 시작할 때와 거부당한 뒤에 드라이버 `stream_control`로 **`head` 채널만** 엶. 팔 궤적(`arm` 채널)과 겹치지 않고, 끌 때
+  자기 채널만 닫음. 드라이버가 60초 무명령으로 닫으면 다음 명령이 거부되고 다시 엶
+
+- **조준 오차**(`look_error`): 10/08부터 TF를 읽지 않습니다. 카메라 장착 **회전**은 설정 `camera_rpy`에서 옵니다 —
+  `link_head_2` 기준 `camera_link`(x 앞, y 왼쪽, z 위)의 roll·pitch·yaw, `camera_mount.yaml`의 `rpy`와 같은 규약
+  (Rz(yaw)·Ry(pitch)·Rx(roll)), 기본 `[0, 0, 0]`. 광학 좌표계(z 앞, x 오른쪽, y 아래)는 고정 변환으로 구합니다(`head_from_optical`).
+  마커 방향 `d`와 카메라 시선 `a`(광학 z축)를 `link_head_2` 축으로 옮겨 각각 pan = atan2(y, x), tilt = −atan2(z, √(x²+y²))을
+  구하고, 그 차가 오차입니다 → pan은 `head_0`(z축, +가 왼쪽), tilt는 `head_1`(y축, +가 아래). 마커가 시선 위에 있으면 카메라를
+  기울여 달았어도 오차가 0입니다. 기본 장착에서는 예전 식과 같습니다. 회전만 쓰므로 "카메라에서 본 방향"입니다. 이동까지 넣어
+  `link_head_2` 원점에서 조준하면 카메라가 4 cm 위에 있어 0.32 m 앞 가운데 마커에도 tilt 오차 −0.116 rad가 남아 머리가 한계까지
+  올라갔습니다(처음 구현)
+- **알아 둘 것**: 장착 회전이 두 곳에 있습니다(`camera_mount.yaml`의 `rpy`, `head_follow: camera_rpy`). 하나를 고치면 다른 것도
+  고칩니다. 마커 좌표의 `frame_id`는 확인하지 않고 광학 좌표계로 봅니다
+- **구역**(`HeadFollower::marker`): 마커가 한 구역 안에 있다는 것은 pan·tilt 오차의 크기가 **둘 다** 그 값 이하라는 뜻입니다
+  (축마다 따로 봄). 안전 구역(`safe_zone`) 안 → 가만히 있고, 벗어난 시각을 지움. 시작 구역(`start_zone`) 밖 → 바로 따라감.
+  둘 사이 → 안전 구역을 벗어난 뒤 `dwell`보다 오래 지나면 따라감. 한번 따라가기 시작하면 안전 구역 안으로 들어올 때까지
+  계속합니다(시작 구역 안으로 들어온 것만으로는 멈추지 않음). 시각은 마커 좌표를 받은 때의 노드 시계
+- **걸음**(`HeadFollower::step`): `rate` Hz 타이머마다, 따라가는 중이면 **자기 오차가 안전 구역 밖인 관절만** 오차 쪽으로
+  `speed`/`rate` rad 옮기고 관절 범위(`lower_limits`·`upper_limits`)로 자릅니다. 오차가 `slow_zone`(0.25 rad) 안이면 걸음을
+  오차/`slow_zone` 비율로 줄입니다. 가운데로 가는 목표 각은 계산하지 않습니다.
+  새 마커 좌표가 없는 틱은 마지막 오차의 방향으로 계속 갑니다. 명령은 `stream_joint`(머리만, `minimum_time` = 1/`rate`).
+  가만히 있을 때와 멈춤 상태에서는 같은 명령을 다시 보냅니다(채널이 닫히지 않게). 원위치는 같은 `speed`로 `home`까지(`step_toward`)
+- **측정한 머리 각 반영**(`HeadFollower::follow`, 10/08): 머리는 명령보다 늦게 돕니다(시뮬레이터에서 약 0.4초 뒤처짐 — 걸음과 실제
+  속도의 비에서 추정한 값). 명령만 쌓으면 명령이 머리보다 앞서 나가, 멈추라고 한 뒤에도 머리가 그 명령까지 돌아 안전 구역
+  반대편을 넘었습니다. 그래서 (1) 명령은 측정한 머리 각에서 **마커 오차만큼**(그리고 `speed` × 0.5초만큼)보다 더 앞서지 않고,
+  (2) 걸음을 멈춘 관절의 명령은 그때 측정한 각으로 한 번 바꿉니다(매 틱 바꾸지는 않음 — 관절이 처지면 명령이 따라 내려가므로).
+  시뮬레이터 실측: 고치기 전에는 정지한 마커에 20초 동안 따라가기를 6번 다시 시작하며 왔다 갔다 했고(75 mm 벗어난 채 끝남),
+  "측정 각에서 한 걸음씩"으로 바꾼 중간 안은 왔다 갔다는 없지만 느려서 18초 안에 안전 구역에 못 들어갔습니다(기각)
+- **시작 때 거부**: `start_zone` ≤ `safe_zone`, `safe_zone`·`start_zone`·`dwell`·`speed`·`rate` 가운데 0 이하, `camera_rpy`가
+  3개가 아님, 아래 한계 ≥ 위 한계 → 무엇을 고칠지 적은 메시지를 FATAL로 내고 종료 코드 1로 끝납니다
+- **정확도**: 마커는 가운데가 아니라 안전 구역 안 어딘가에 놓입니다. 영상 지연은 보정하지 않으므로 멈출 때 지연 × 그때 속도만큼
+  더 돌 수 있습니다(안전 구역 가장자리에서 속도는 `speed` × 0.03/0.25 = 0.06 rad/s) — 실제 카메라에서는 재지 않았습니다.
+  10/08 전 방식(`gain` 0.6, `deadband` 0.005)의 실측은 가짜 마커 (0.5, 0.3) → (0.495, 0.298), (−0.4, −0.2) → (−0.396, −0.198) rad였고,
+  지금 방식의 값이 아닙니다
+- **검증 수준(10/08)**: 🟠 gtest 17개(오차 각, 구역, `dwell`, 걸음, 한 축만 움직임, 늦게 도는 머리, 관절 범위, 설정 거부)와
+  시뮬레이터 10회. 시뮬레이터: 가짜 마커(영상 지연 없음, 카메라·검출기 없이 진짜 위치에서 만든 좌표)를 0.52~0.76 m 앞 열 곳에 놓고
+  6초 뒤 4초 동안 5~12 cm/s로 밀었습니다. 따라가기 19번이 모두 안전 구역 안에서 끝났고(마지막 벗어남 0.023~0.028 rad),
+  멈춘 뒤 5초 동안 머리 각 변화는 0.00015 rad 이하였습니다. 실제 카메라와 실제 로봇에서는 돌려 보지 않았습니다.
+  아래 **다른 명령과**의 실측은 10/08 전 방식으로 잰 것입니다. 기록: `~/isaac_ros_ws/cumotion_artifacts/head_follow_2026-10-08/`
+- **상태**: 대기 → 추적(가만히 보거나 따라감) → (`lost_timeout`) 멈춤 → (`return_after`) 원위치 → 대기. 대기에서는 명령을
+  보내지 않으므로 60초가 지나면 드라이버가 스트림을 닫습니다(10/06 전에는 1초)
 - **다른 명령과**: 드라이버가 머리에 스트림을 따로 두고, cuMotion은 머리를 덮개 구로 보며 자세 검사에서 빼므로(§5) 팔이
   움직이는 동안에도 계속 추적. 드라이버가 거부하면 0.5 s 쉼. 스트림은 꺼진 것을 본 뒤 0.5 s가 지나야 켬 — 실행기가 FJT 뒤 끈 지 14 ms 만에
   켜서 만료된 스트림을 받은 적이 있음. 실측: 머리 20 Hz 명령을 계속 보내며 cuMotion 예제 15·18·19·21 각 2회 8/8 DONE, 머리 명령
@@ -906,20 +1273,23 @@ Python에서 C++로 옮겼고(`src/target_tag_filter.cpp`, 계산은 `src/pose_a
   (0.491, 0.292) → (−0.390, −0.191)로 수렴(`deadband` 0.02 안), 놓친 뒤 멈춤·원위치, 팔 FJT 4 s와 동시에 돌려 머리 명령 거부 0
 - 드라이버 쪽 조건(한 스트림은 앞선 명령에 없던 부위를 무시 등)은 [§4 드라이버 동작](#4-실행-경로와-드라이버-동작)
 
-#### 손 (`22_marker_tracking`의 `Hand`)
+#### 손, 실행기 경유 — 옛 방식 (옛 예제 `17`·`22`의 `ExecutorHand`)
+
+지금은 `marker_target`이 이 일을 합니다. 다른 점: `marker_target`은 추적 모드를 스스로 켜지 않고(`set_tracking`은 쓰는 사람이
+부름), 작업 영역 상자로 자르지 않으며, 마커 방향을 따르지 않습니다. 아래는 옛 구현의 기록입니다.
 
 - 시작할 때 실행기의 `set_tracking(true)`를 부르고(이동 중이라 거부되면 1 s마다 다시), 끝낼 때(Ctrl+C) `false`. 그래서 rclpy의
   SIGINT 처리를 끄고(`SignalHandlerOptions.NO`) `KeyboardInterrupt`에서 서비스를 부른 뒤 종료
 - 목표 = 마커 위치 + `hand.offset`(`base` 방향, 기본 로봇 쪽 20 cm), 방향은 시작 때 손(`hand.tool_frame`) 그대로 또는
   `hand.follow_orientation`이면 마커 방향 × `hand.orientation_offset_rpy`. `hand.workspace_min`·`max` 상자로 자름
-- TF를 `hand.rate`(60 Hz)로 보고 **마커 표본이 새로 올 때마다 목표 하나**(stamp가 바뀔 때; 움직였든 아니든 — 실행기가 그것으로
+- TF를 60 Hz(`TF_LOOK_RATE`)로 보고 **마커 표본이 새로 올 때마다 목표 하나**(stamp가 바뀔 때; 움직였든 아니든 — 실행기가 그것으로
   마커 속도를 추정). 마커 TF가 `hand.lost_after`(0.5 s)보다 오래되면 안 보냄 → 실행기가 마지막 목표에서 멈춤
 - 실측은 cuMotion §6.2 **정확도** 표(정지 0.1 mm, 6 cm/s 1.4 mm, 13 cm/s 7.5 mm). 마커가 사라지면 `marker … lost` 뒤 멈춤,
   Ctrl+C·SIGTERM에 실행기 `READY`(스크립트가 SIGINT를 무시한 채 띄워도 되도록 핸들러를 직접 검). `follow:=both`로 머리와 동시에도 같음
 
-#### 드라이버만으로 따라가기 (`24_marker_cartesian_stream`)
+#### 손, 드라이버 직접 — 옛 비교 예제 (옛 예제 `17`·`24`의 `DriverHand`)
 
-"실제로 해 보니 팔이 계속 흔들린다 — MPC의 한계인가"(10/01)를 가려 보기 위한 비교 예제. 마커 좌표(`/target_marker_<id>/pose`)를
+"실제로 해 보니 팔이 계속 흔들린다 — MPC의 한계인가"(10/01)를 가려 보기 위한 비교 예제. 마커 좌표(`/rby1/marker_<id>/pose`)를
 드라이버 `get_cartesian_pose`(머리 자세)와 TF(카메라 장착)로 `base`에 놓고, 목표 = 마커 + `offset`(작업 영역 상자 안, 지수
 평활 `smoothing`), 명령은 `max_speed`/`rate`씩 다가가며 `stream_cartesian`으로(기준 `link_torso_5` — 드라이버 IK가 팔 관절만
 쓰도록; `base` 기준이면 IK가 몸통도 써서 팔만으로는 못 감). 앞서 겨누기·장애물 검사 없음. 5초마다 명령·거절 수와 마커 좌표의
@@ -933,14 +1303,16 @@ Python에서 C++로 옮겼고(`src/target_tag_filter.cpp`, 계산은 `src/pose_a
 | `22`, 마커에 1 mm 노이즈 | 0.8 | 3.2~3.7 | 8.4~9.2 | 0.4~0.5 s | 오차 최대 1.5 |
 
 즉 드라이버 스트림은 약 0.33 s 늦게 따라가지만 노이즈에는 둔하고, cuMotion `ik`는 지연이 거의 없는 대신(앞서 겨누기) 마커
-노이즈에 더 민감 — 실제 카메라에서 손이 떨리면 `tracking.smoothing`↑·`tracking.lead`↓로 맞춤(튜토리얼 §4.7 ⑤).
+노이즈에 더 민감 — 실제 카메라에서 손이 떨리면 `tracking.smoothing`↑·`tracking.lead`↓로 맞춤(튜토리얼 §4.7의 "손이 떨릴 때" 표).
 
-#### 왕복 (`23_marker_shuttle`)
+#### 왕복 (옛 예제 `16_target_shuttle`의 `mode:=markers`, 그 전 `23`)
+
+지금은 예제에 없습니다. 아래는 당시 구현과 실측의 기록입니다.
 
 - 두 마커가 `fresh`(1 s) 안에 보일 때까지 `marker_wait`(20 s) 기다림 → 구간마다 그 마커를 다시 읽고(안 보이면 마지막 위치)
   `hand_target(마커, offset, 준비 자세 손 방향)`을 점대점 목표로 → `DONE`을 기다림. 실행기가 구간마다 계획하므로 장면의 장애물은
   cuMotion·MoveIt(OMPL) 어느 쪽이든 피함(cuMotion은 이동 중에 생긴 것도)
-- `box:=true`: 첫 왕복 뒤 두 지점 한가운데에 6 cm 상자(두 지점이 30 cm보다 가까우면 손목 구가 상자와 겹치므로 넣지 않음), 끝나면 치움
+- 옛 `box:=true`(첫 왕복 뒤 한가운데에 6 cm 상자)는 없앰 — 스크립트가 같은 상자를 넣는 `scene add box …` 명령을 출력
 - 구간이 끝나면 손(드라이버 `get_cartesian_pose`)과 지점의 거리를 출력하고 `tolerance`(5 mm)를 넘으면 실패로 끝냄
 - 실측(격리 시뮬, 마커 7·12를 `base` (0.45, −0.45, 1.25)·(0.45, −0.10, 1.25)에 가짜 TF): 3왕복 6구간 모두 `DONE`, **끝점 오차
   0.0~0.6 mm**. 손이 두 지점의
@@ -986,7 +1358,8 @@ Python에서 C++로 옮겼고(`src/target_tag_filter.cpp`, 계산은 `src/pose_a
 
 격리 시뮬(도메인 77)에서 합성 영상(`camera:=file`, 태그 7, 200 px, f = 640 (그때는 `horizontal_fov:=90`, 지금은 같은 값의 보정 파일 `intrinsics:=`))으로:
 
-- 가운데에서 왼쪽 300 px·위 120 px 마커 → `/target_marker/pose` `camera_optical_frame` (−0.151, −0.060, 0.322), 기대 (−0.15, −0.06, 0.32)
+- 가운데에서 왼쪽 300 px·위 120 px 마커 → `/rby1/marker/pose`(잰 때의 이름은 `/target_marker/pose`) `camera_optical_frame` (−0.151, −0.060, 0.322), 기대 (−0.15, −0.06, 0.32)
+- 머리 추적의 아래 실측은 10/08 전 방식(`gain`·`deadband`)으로 잰 것입니다. 구역 방식(10/08)은 gtest만 했고 시뮬레이터·실제 로봇에서는 돌려 보지 않았습니다
 - 머리가 pan +(왼쪽)·tilt −(위)로 약 0.7 rad/s로 돌다 범위 끝(±1.5)에서 멈춤(정지 영상이라 오차가 안 줄어듦). 가운데 마커면 가만히 있음
 - 마커를 치우면 0.5 s 뒤 멈춤, 3 s 뒤 (0, 0)으로 돌아가 명령을 멈춤
 - 머리 추적을 켠 채 MoveIt 예제 15: 드라이버 수정 전 3/3 `FAILED … stopped short`(팔 안 움직임), 수정 후 6/6 `EXAMPLE_DONE`.
@@ -997,8 +1370,7 @@ Python에서 C++로 옮겼고(`src/target_tag_filter.cpp`, 계산은 `src/pose_a
 ```bash
 # 컨테이너
 colcon build --symlink-install --base-paths src/rby1_isaac_ros/rby1_apriltag --packages-select rby1_apriltag
-colcon test --base-paths src/rby1_isaac_ros/rby1_apriltag --packages-select rby1_apriltag   # gtest 5: 중앙값, 짝수 개, SVD 회전, 빈 입력, 좌표계 이름
+colcon test --base-paths src/rby1_isaac_ros/rby1_apriltag --packages-select rby1_apriltag   # 집계 27 (gtest 24 + 실행 파일 3): 필터 5(중앙값, 짝수 개, SVD 회전, 빈 입력, 좌표계 이름), 손 목표 2(hand_target), 머리 추적 17(head_follow: 오차 각, 구역, dwell, 걸음, 늦게 도는 머리, 관절 범위, 설정 거부)
 # 호스트
 colcon test --packages-select rby1_additional_tools                                          # gtest: 카메라 모델(보정 파일 두 형식, 크기 맞춤)
-python3 -m pytest ~/ros2_driver_ws/src/rby1_ros2/rby1_examples/test/test_marker_examples.py  # 19: 손 목표(오프셋·방향·상자), 조준 오차, 한 걸음, 범위, 상자 위치, 쿼터니언·평활·속도 제한 걸음
 ```

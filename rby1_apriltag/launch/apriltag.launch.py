@@ -1,13 +1,19 @@
 """AprilTag markers in images from the host camera, on the GPU (Isaac ROS).
 
   ros2 launch rby1_apriltag apriltag.launch.py [width:=1280 height:=720] [ids:=7,12] [size:=0.10]
+  ros2 launch rby1_apriltag apriltag.launch.py follow_head:=true      # the head follows its marker
 
 The camera runs on the host (rby1_additional_tools camera.launch.py) and publishes
 /camera/image_raw and /camera/camera_info; nothing here touches a device. The images
 are rectified (isaac_ros_image_proc), searched for tags (isaac_ros_apriltag: all
 detections on /tag_detections), and the ones in config/target_tags.yaml are
-smoothed and published as /target_marker/pose and TF target_marker_<id>
-(target_tag_filter).
+smoothed and published as /rby1/marker/pose, /rby1/marker_<id>/pose and TF
+target_marker_<id> (target_tag_filter).
+
+With follow_head:=true (or head_follow: enabled in the config) the head turns after
+its marker (head_follow: marker_id) when the marker leaves the middle of the image,
+until it is back there (head_follow: safe_zone, start_zone): this moves the robot's
+head, through the driver's 'head' stream channel only.
 
 The markers are set in config/target_tags.yaml: the edge of the tag's black square
 in metres (`size` -- a tag's pose comes from that size and the camera model, from
@@ -64,6 +70,25 @@ def marker_settings(path, size='', family=''):
     return {'size': settings['size'], 'tag_family': str(settings['tag_family'])}
 
 
+def head_marker(config, follow_head, ids):
+    """The marker the head is to follow, or None when head following is off.
+
+    `follow_head` is the launch argument: '' leaves it to the config file's
+    head_follow: enabled, true or false decides for this run.
+    """
+    settings = (config.get('head_follow') or {}).get('ros__parameters') or {}
+    follow_head = follow_head.strip().lower()
+    if follow_head not in ('', 'true', 'false'):
+        raise ValueError(f'follow_head must be true or false, got {follow_head!r}')
+    if follow_head == 'false' or (not follow_head and not settings.get('enabled', False)):
+        return None
+    marker = settings.get('marker_id', 7)
+    if marker not in ids:
+        raise ValueError(f'the head is to follow marker {marker}, which the filter does not keep (target ids '
+                         f'{list(ids)}): add it to target_ids (or ids:=), or change head_follow: marker_id')
+    return marker
+
+
 def nodes(context):
     value = LaunchConfiguration
     config = value('config').perform(context)
@@ -89,9 +114,15 @@ def nodes(context):
         ids = ((read_config(config).get('target_tag_filter') or {}).get('ros__parameters') or {}).get('target_ids')
     # What is used and from which file: the installed copy of the config is not the one in
     # the source tree unless the package was built with --symlink-install.
-    return [LogInfo(msg=f'markers: {marker["tag_family"]}, black square {marker["size"]:g} m, target ids {ids} '
-                        f'(settings: {os.path.realpath(config)})'),
-            container, target_filter]
+    started = [LogInfo(msg=f'markers: {marker["tag_family"]}, black square {marker["size"]:g} m, target ids {ids} '
+                           f'(settings: {os.path.realpath(config)})'),
+               container, target_filter]
+    head = head_marker(read_config(config), value('follow_head').perform(context), ids or [])
+    if head is not None:
+        started += [LogInfo(msg=f'the head follows marker {head}: this moves the robot\'s head'),
+                    Node(package='rby1_apriltag', executable='head_follow', name='head_follow',
+                         parameters=[config], output='screen')]
+    return started
 
 
 def generate_launch_description():
@@ -108,5 +139,8 @@ def generate_launch_description():
         DeclareLaunchArgument('tag_family', default_value='', description='empty: tag_family of the config'),
         DeclareLaunchArgument('ids', default_value='',
                               description='target marker ids, comma separated (empty: target_ids of the config)'),
+        DeclareLaunchArgument('follow_head', default_value='',
+                              description='true: the head turns to keep its marker in the middle of the image '
+                                          '(empty: head_follow: enabled of the config). Moves the robot\'s head'),
         OpaqueFunction(function=nodes),
     ])

@@ -3,7 +3,7 @@
 Two stages, because move_group and the cuMotion planner load the robot model
 when they start:
 
-  1. prepare (rby1_cumotion/prepare.py) runs once: driver check, robot kind and
+  1. prepare (rby1_cumotion/bringup/prepare.py) runs once: driver check, robot kind and
      version -> bundle, emergency stop and faults, power and servos, a straight
      planning arm to the ready pose, then the runtime bundle with the posture
      locked where the robot now stands. It exits.

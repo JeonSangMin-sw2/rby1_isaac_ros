@@ -8,12 +8,13 @@ With the RB-Y1 driver (hardware driver), in order:
   1. robot kind and version from the driver -> which bundle
   2. emergency stop and control manager faults
   3. power and servos on (robot.enable_robot)
-  4. a straight planning arm is bent to the ready pose (robot.ready_if_straight)
+  4. what is straight -- either arm, the torso -- is taken to the ready pose in one
+     move (robot.ready_if_straight, robot.ready_pose)
   5. the posture is measured, and the runtime bundle is made with the joints
      outside the planning group locked there
 
-Doing 4 before 5 means every arm is where it will stay before anything is
-locked, so moving an arm here never leaves the planner with a stale posture.
+Doing 4 before 5 means every part is where it will stay before anything is
+locked, so moving one here never leaves the planner with a stale posture.
 
 With hardware mock there is no robot: the bundle comes from `model` ($RBY1_MODEL,
 default m_1_2) at its stored posture.
@@ -35,8 +36,8 @@ from sensor_msgs.msg import JointState
 from rby1_msgs.action import Rby1JointCommand
 from rby1_msgs.msg import RobotState
 from rby1_cumotion import settings
-from rby1_cumotion.driver import (bundle_name, Driver, READY, read_robot, ready_goal,
-                                  robot_problem, straight_arms)
+from rby1_cumotion.bringup.driver import (bundle_name, Driver, read_robot, ready_goal, robot_problem,
+                                          straight_parts)
 from rby1_cumotion.model import activate, load_model
 from rby1_cumotion.planning import running_nodes
 
@@ -111,10 +112,11 @@ class Preparer:
         self.spin_until(lambda: self.received > since, 5.0, 'joint_states')
         return dict(self.positions)
 
-    def ready(self, arms, move_time, settle=10.0, tolerance=0.05):
+    def ready(self, pose, parts, move_time, settle=10.0, tolerance=0.05):
+        """Move `parts` to their joints in the ready pose `pose`, in one command."""
         client = self.driver.action(Rby1JointCommand, 'robot_joint')
         try:
-            handle = self.driver.wait(client.send_goal_async(ready_goal(arms, move_time)), 10.0)
+            handle = self.driver.wait(client.send_goal_async(ready_goal(pose, parts, move_time)), 10.0)
             if not handle.accepted:
                 raise RuntimeError('Driver rejected the ready-pose command')
             result = self.driver.wait(handle.get_result_async(), move_time + 30.0)
@@ -122,7 +124,7 @@ class Preparer:
                 raise RuntimeError(f'Ready-pose move failed: {result.result.finish_code}')
         finally:
             client.destroy()
-        target = {f'{arm}_{i}': q for arm in arms for i, q in enumerate(READY[arm])}
+        target = {f'{part}_{i}': q for part in parts for i, q in enumerate(pose[part])}
         deadline = time.monotonic() + settle
         while True:
             current = self.fresh_positions()
@@ -131,7 +133,7 @@ class Preparer:
             if not off:
                 return
             if time.monotonic() > deadline:
-                raise RuntimeError(f'Arm did not reach the ready pose: {off} (rad off). Check '
+                raise RuntimeError(f'The robot did not reach the ready pose: {off} (rad off). Check '
                                    'that nothing blocks it, or start without the move '
                                    '(robot.ready_if_straight: false in the config)')
 
@@ -146,7 +148,7 @@ def prepare_driver(robot, args):
     source = choose_source(kind, version, robot['model'], args.model_directory,
                            os.environ.get('RBY1_BUNDLES', '/opt/rby1/bundles'))
     group = robot['group']
-    metadata, _ = load_model(source, group.replace('+', '_'))
+    load_model(source, group.replace('+', '_'))  # an unknown group is refused before the robot moves
     rclpy.init(args=[])
     node = rclpy.create_node('cumotion_prepare')
     try:
@@ -154,11 +156,11 @@ def prepare_driver(robot, args):
         preparer.check(robot['enable_robot'])
         positions = preparer.fresh_positions()
         if robot['ready_if_straight']:
-            arms = straight_arms(positions, metadata['active_joints'], robot['straight_elbow'])
-            if arms:
-                log(node, f'{", ".join(arms)} straight (elbow near 0 rad): moving to the ready pose')
-                preparer.ready(arms, robot['ready_time'])
-                log(node, f'{", ".join(arms)} at the ready pose')
+            parts = straight_parts(positions, robot['ready_pose'], robot['straight_elbow'])
+            if parts:
+                log(node, f'straight: {", ".join(parts)} -- moving them to the ready pose together')
+                preparer.ready(robot['ready_pose'], parts, robot['ready_time'])
+                log(node, f'{", ".join(parts)} at the ready pose')
                 positions = preparer.fresh_positions()
     finally:
         node.destroy_node()

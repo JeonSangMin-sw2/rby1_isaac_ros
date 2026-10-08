@@ -12,6 +12,7 @@ velocity, so the plan avoids where they are going, not only where they were.
 The cuRobo parts need the container; the obstacle bookkeeping above them does not.
 """
 
+import copy
 import math
 
 import numpy as np
@@ -231,6 +232,7 @@ class Avoider:
         self.ground = ground
         robot = get_robot_config(robot_file=metadata['xrdf_path'],
                                  urdf_file_path=write_resolved_urdf(root), logger=None)['robot_cfg']
+        self.robot_config = copy.deepcopy(robot)  # for relock()
         empty = world_config([], ground)
         caches = {'obb': cache, 'mesh': cache}
         self.world = RobotWorld(RobotWorldConfig.load_from_config(
@@ -244,10 +246,49 @@ class Avoider:
         self.motion_gen.warmup(enable_graph=True)
         self.names = list(self.motion_gen.kinematics.joint_names)
         self.checked = self.planned = None
+        self.body, self.body_names, self.cache = None, [], cache
+
+    def unlock(self, metadata, root):
+        """A second check model, of a bundle whose group also holds joints this one has locked
+        (the torso): first_hit(locked=) then checks any posture of them without relock().
+
+        The same spheres at the same places as the planner's model moved there with relock()
+        (0.00 mm apart, the same answer for 96 of 96 postures), in 0.4 ms against 0.8 s.
+        """
+        from curobo.geom.sdf.world import CollisionCheckerType
+        from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
+        from isaac_ros_cumotion.update_kinematics import get_robot_config
+        from rby1_cumotion.model import write_resolved_urdf
+        robot = get_robot_config(robot_file=metadata['xrdf_path'],
+                                 urdf_file_path=write_resolved_urdf(root), logger=None)['robot_cfg']
+        self.body = RobotWorld(RobotWorldConfig.load_from_config(
+            robot, world_config([], self.ground), self.tensor, n_meshes=self.cache, n_cuboids=self.cache,
+            collision_activation_distance=0.0, collision_checker_type=CollisionCheckerType.MESH))
+        self.body_names = list(self.body.kinematics.joint_names)
+        self.checked = None  # the next update() hands it the obstacles
+
+    def relock(self, positions):
+        """Move joints outside the planning group -- compiled into the model -- to {joint: rad}.
+
+        For a torso that moved: the models follow without being built again (0.8 s
+        against 20 s). What was attached to a link is dropped: attach() again.
+        """
+        from curobo.types.robot import RobotConfig
+        locks = self.robot_config['kinematics']['lock_joints']
+        unknown = sorted(set(positions) - set(locks))
+        if unknown:
+            raise ValueError(f'not joints the model has locked: {unknown}')
+        locks.update({name: float(value) for name, value in positions.items()})
+        self.motion_gen.update_locked_joints(dict(locks), copy.deepcopy(self.robot_config))
+        moved = RobotConfig.from_dict(copy.deepcopy(self.robot_config), self.tensor)
+        self.world.kinematics.update_kinematics_config(moved.kinematics.kinematics_config)
 
     def attach(self, spheres, link):
         """Spheres [x, y, z, r] on `link` (the attached-object frame) for checks and replans; [] clears."""
-        for kinematics in (self.world.kinematics, self.motion_gen.kinematics):
+        models = [self.world.kinematics, self.motion_gen.kinematics]
+        if self.body is not None:
+            models.append(self.body.kinematics)
+        for kinematics in models:
             kinematics.kinematics_config.detach_object(link_name=link)
             if spheres:
                 kinematics.kinematics_config.update_link_spheres(
@@ -265,6 +306,8 @@ class Avoider:
         key = signature(check_objects)
         if key != self.checked:
             self.world.update_world(world_config(check_objects, self.ground))
+            if self.body is not None:
+                self.body.update_world(world_config(check_objects, self.ground))
             self.checked = key
         self.plan_world(plan_objects)
 
@@ -274,25 +317,34 @@ class Avoider:
             self.motion_gen.update_world(world_config(objects, self.ground))
             self.planned = key
 
-    def first_hit(self, rows, names, times=None, moving=(), velocities=None):
+    def first_hit(self, rows, names, times=None, moving=(), velocities=None, locked=None):
         """(first row in collision or None, whether a moving obstacle is what it meets).
 
         Rows are joint positions in `names` order. The cuRobo world holds the standing
         obstacles; `moving` ones are checked at each row's `times` (seconds ahead)
-        along their `velocities`.
+        along their `velocities`. `locked`: {joint: rad} for the joints unlock() freed
+        -- the rows are checked with those joints there, not where the planner's model has them.
         """
         if len(rows) == 0:
             return None, False
-        order = [names.index(name) for name in self.names]
+        world, model_names = self.world, self.names
+        rows = np.asarray(rows, dtype=np.float32)
+        if locked is not None:
+            if self.body is None:
+                raise RuntimeError('first_hit(locked=) needs unlock() first')
+            world, model_names = self.body, self.body_names
+            names = [*names, *locked]
+            rows = np.hstack([rows, np.tile(np.array(list(locked.values()), dtype=np.float32), (len(rows), 1))])
+        order = [names.index(name) for name in model_names]
         # Column fancy-indexing hands back a Fortran-ordered array; cuRobo's kernels
         # assert on anything not C-contiguous.
-        rows = np.ascontiguousarray(np.asarray(rows, dtype=np.float32)[:, order])
+        rows = np.ascontiguousarray(rows[:, order])
         q = self.tensor.to_device(self.torch.from_numpy(rows)).contiguous()
-        d_world, d_self = self.world.get_world_self_collision_distance_from_joints(q)
+        d_world, d_self = world.get_world_self_collision_distance_from_joints(q)
         hits = (d_world.view(-1) > 0).cpu().numpy() | (d_self.view(-1) > 0).cpu().numpy()
         first = int(np.nonzero(hits)[0][0]) if hits.any() else None
         if moving:
-            spheres = self.world.get_kinematics(q).link_spheres_tensor.view(len(rows), -1, 4).cpu().numpy()
+            spheres = world.get_kinematics(q).link_spheres_tensor.view(len(rows), -1, 4).cpu().numpy()
             index = moving_collision(spheres, times, moving, velocities)
             if index is not None and (first is None or index < first):
                 return index, True
@@ -305,8 +357,12 @@ class Avoider:
         state = self.world.get_kinematics(self.tensor.to_device(self.torch.from_numpy(row)).contiguous())
         return state.link_spheres_tensor.view(-1, 4).cpu().numpy()
 
-    def replan(self, q, v, target, names, attempts=2):
-        """Joint path from (q, v) to the 4x4 tool target, in `names` order; or (None, status)."""
+    def replan(self, q, v, target, names, attempts=2, graph=True):
+        """Joint path from (q, v) to the 4x4 tool target, in `names` order; or (None, status).
+
+        `graph` false leaves out cuRobo's graph search: 77 ms against 94-120 ms from standing,
+        and no path in scenes only the graph gets through.
+        """
         from curobo.types.math import Pose
         from curobo.types.state import JointState
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
@@ -322,7 +378,7 @@ class Avoider:
         goal = Pose(position=self.tensor.to_device(tensor([np.asarray(target)[:3, 3]], dtype=self.torch.float32)),
                     quaternion=self.tensor.to_device(tensor([[w, x, y, z]], dtype=self.torch.float32)))
         result = self.motion_gen.plan_single(start, goal, MotionGenPlanConfig(
-            max_attempts=attempts, enable_graph=True))
+            max_attempts=attempts, enable_graph=graph))
         if not bool(result.success.item()):
             return None, str(getattr(result.status, 'name', result.status))
         plan = result.get_interpolated_plan().position.cpu().numpy().reshape(-1, len(self.names))

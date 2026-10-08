@@ -8,18 +8,18 @@ flowchart LR
     subgraph host["호스트"]
         camera["카메라<br/>camera.launch.py"]
         driver["RB-Y1 드라이버"]
-        tracker["마커 예제<br/>22_marker_tracking<br/>23_marker_shuttle"]
     end
     subgraph container["컨테이너 (GPU)"]
         rectify["왜곡 보정<br/>RectifyNode"]
         apriltag["마커 검출<br/>AprilTagNode"]
         filter["대상 마커 선별·안정화<br/>target_tag_filter"]
+        tracker["머리 추적 head_follow<br/>마커 → 팔 목표 marker_target"]
     end
     camera -->|"/camera/image_raw<br/>/camera/camera_info"| rectify
     rectify --> apriltag
     apriltag -->|"/tag_detections"| filter
-    filter -->|"/target_marker_&lt;id&gt;/pose<br/>TF target_marker_&lt;id&gt;"| tracker
-    tracker -->|"머리: stream_joint<br/>손: cuMotion 실행기 경유"| driver
+    filter -->|"/rby1/marker_&lt;id&gt;/pose<br/>TF target_marker_&lt;id&gt;"| tracker
+    tracker -->|"머리: stream_joint<br/>손: 실행기 경유"| driver
 ```
 
 **위에서 아래로 순서대로 따라 하면 됩니다.** 문제가 생기면 그 터미널에 나오는 메시지가 원인과 할 일을 알려 줍니다.
@@ -35,9 +35,8 @@ ros2 launch rby1_driver rby1_ros2_driver.launch.py                  # 드라이�
 # 터미널2 : 호스트
 ros2 launch rby1_additional_tools camera.launch.py                  # 카메라 → 토픽
 # 터미널3 : 컨테이너 (isaac-ros)
-ros2 launch rby1_apriltag apriltag.launch.py                        # 마커 검출 → /target_marker/pose
-# 터미널4 : 호스트
-ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head  # 머리가 마커를 따라감 (§3.4)
+ros2 launch rby1_apriltag apriltag.launch.py                        # 마커 검출 → /rby1/marker/pose
+ros2 launch rby1_apriltag apriltag.launch.py follow_head:=true      # 같은 것 + 머리가 마커를 따라감 (§3.4)
 ```
 
 ---
@@ -83,7 +82,7 @@ colcon build --symlink-install --base-paths src/rby1_isaac_ros/rby1_apriltag --p
 | 1 | 호스트 | 드라이버 (로봇을 움직일 때. 시뮬레이터면 [tutorial_cumotion.md 3.1](tutorial_cumotion.md#31-시뮬레이터--터미널-1)도) |
 | 2 | 호스트 | 카메라 |
 | 3 | 컨테이너 | 마커 검출 |
-| 4 | 호스트 | 확인, 마커 예제 |
+| 4 | 호스트 | 확인 |
 
 호스트 터미널에서는 먼저 `source ~/ros2_driver_ws/install/setup.bash`를 합니다.
 
@@ -107,7 +106,7 @@ ros2 launch rby1_additional_tools camera.launch.py camera:=realsense intrinsics:
 
 없으면 RealSense는 공장 보정값을, 웹캠은 화각(`horizontal_fov`)으로 만든 근사 모델을 씁니다(마커 거리가 대략값).
 카메라가 머리에 붙은 위치는 `rby1_additional_tools/config/camera_mount.yaml`(기본: `link_head_2`에서 앞 22 mm, 위 40 mm)입니다.
-다르면 재서 고칩니다. 설정 전체는 드라이버 저장소 README의 **Additional Tools**에 있습니다.
+다르면 재서 고칩니다. 설정 전체는 드라이버 저장소 `Dev_page.md`의 `rby1_additional_tools`에 있습니다.
 
 > 카메라나 보정값을 바꾸면 3.2(마커 검출)도 다시 켭니다. 컨테이너의 보정 노드가 처음 받은 카메라 모델을 계속 씁니다.
 
@@ -116,7 +115,7 @@ ros2 launch rby1_additional_tools camera.launch.py camera:=realsense intrinsics:
 ```bash
 isaac-ros
 ros2 launch rby1_apriltag apriltag.launch.py
-ros2 launch rby1_apriltag apriltag.launch.py ids:=7,12 size:=0.08      # 마커 번호·크기를 이번만 바꿔서
+ros2 launch rby1_apriltag apriltag.launch.py ids:=7,8 size:=0.08       # 마커 번호·크기를 이번만 바꿔서
 ```
 
 마커 설정은 `rby1_apriltag/config/target_tags.yaml`에 있습니다(6. 설정). **먼저 `size`를 인쇄한 마커에 맞춥니다.**
@@ -142,8 +141,8 @@ markers: tag36h11, black square 0.1 m, target ids [7] (settings: …/rby1_aprilt
 마커를 카메라 앞에 둡니다.
 
 ```bash
-ros2 topic echo /target_marker/pose --once        # frame_id: camera_optical_frame, position.z = 카메라에서 거리(m)
-ros2 topic hz /target_marker/pose                 # 카메라 fps 정도
+ros2 topic echo /rby1/marker/pose --once          # frame_id: camera_optical_frame, position.z = 카메라에서 거리(m)
+ros2 topic hz /rby1/marker/pose                   # 카메라 fps 정도
 ros2 run tf2_ros tf2_echo link_head_2 target_marker_7
 ```
 
@@ -165,34 +164,60 @@ ros2 launch rby1_additional_tools camera.launch.py camera:=realsense rviz:=true 
 
 ---
 
-### 3.4. 마커로 로봇 움직이기 — 터미널 4
+### 3.4. 마커로 로봇 움직이기 — 터미널 3 (컨테이너)
 
 드라이버(터미널 1)가 떠 있고 로봇 전원·서보가 켜져 있어야 합니다(`ros2 run rby1_examples 06_zero_pose`로 켤 수 있음).
+3.2의 런치를 끄고, 아래 중 하나로 다시 켭니다(모두 마커 검출을 포함합니다).
 
-| 예제 (드라이버 저장소 `rby1_examples`) | 하는 일 | 더 필요한 것 |
+| 켜는 것 | 하는 일 | 더 필요한 것 |
 |---|---|---|
-| `22_marker_tracking --ros-args -p follow:=head` | 머리가 돌아 마커를 화면 가운데에 둠 | 없음 |
-| `22_marker_tracking` | 손이 마커를 따라감 (`follow:=both`면 머리도) | cuMotion 기동 |
-| `23_marker_shuttle` | 손이 두 마커의 10 cm 아래 지점을 오감, 장애물이 있으면 피해서 | cuMotion 기동, 마커 두 개(`ids:=7,12`) |
+| `apriltag.launch.py follow_head:=true` | 마커가 화면 가운데에서 벗어나면 머리가 따라 돌아 다시 가운데 근처에 둠 | 없음 |
+| `marker_target.launch.py` | 마커를 팔 목표로 보냄 — 손이 마커(의 10 cm 아래)로 감, 장애물을 봄 | 타깃 실행기(cuMotion 기동 또는 `rby1_moveit_executor`) |
+| `marker_target.launch.py follow_head:=true` | 위 둘 다 | 타깃 실행기 |
+
+두 마커 사이를 오가는 왕복(옛 `16_target_shuttle`의 `mode:=markers`)은 예제에서 빠졌습니다.
 
 머리만 따라가게 하는 것은 여기서 바로 됩니다:
 
 ```bash
-ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head
+ros2 launch rby1_apriltag apriltag.launch.py follow_head:=true
 ```
 
 ```
-head: following /target_marker_7/pose in link_head_2 at 20 Hz (gain 0.60, max 0.80 rad/s)
-head: marker found 0.36 m away: tracking
+[INFO] [launch.user]: the head follows marker 7: this moves the robot's head
+[head_follow]: the head follows /rby1/marker_7/pose at 20 Hz: still within 0.030 rad of the camera's line of sight, following beyond 0.100 rad or after 1.0 s in between, at 0.50 rad/s (camera rpy [0.000, 0.000, 0.000] in link_head_2)
+[head_follow]: marker found 0.60 m away, [-0.362, 0.344] rad off the line of sight
+[head_follow]: following: the marker is [-0.362, 0.344] rad off the line of sight (beyond the start zone)
+[head_follow]: Stream channels opened: head.
+[head_follow]: marker back inside the safe zone ([-0.027, 0.022] rad off): the head stands still
 ```
 
-마커를 움직이면 머리가 따라 돌아 마커를 화면 가운데에 둡니다. 마커를 치우면 `marker lost: holding the head`로 멈췄다가
-3초 뒤 `going home`으로 정면을 봅니다.
+대괄호 안은 그때의 각(pan, tilt)입니다. 위 숫자는 시뮬레이터에서 가짜 마커로 받은 로그입니다.
 
-손을 움직이는 두 예제의 순서와 파라미터는 [tutorial_cumotion.md 4.7](tutorial_cumotion.md#47-카메라가-본-마커로-움직이기-예제-22-23)에
-있습니다.
+머리는 마커가 카메라 시선(화면 가운데)에서 얼마나 벗어났는지를 두 각(좌우 pan, 상하 tilt)으로 보고 움직입니다.
 
-> cuMotion이나 MoveIt 실행기로 팔을 움직이는 동안에도 머리는 계속 따라갑니다(드라이버가 머리에 스트림을 따로 둠).
+| 마커 위치 | 머리 |
+|---|---|
+| 안전 구역 안 (`safe_zone`, 기본 0.03 rad) | 가만히 있음 |
+| 시작 구역 밖 (`start_zone`, 기본 0.10 rad) | 바로 따라감 |
+| 두 구역 사이에 `dwell`(기본 1초)보다 오래 있음 | 따라감 |
+
+- 따라갈 때는 가운데로 한 번에 가지 않습니다. 머리 관절을 마커 쪽으로 `speed`(기본 0.5 rad/s)로 계속 돌립니다.
+- 마커가 `slow_zone`(기본 0.25 rad) 안으로 들어오면 남은 각에 비례해 느려집니다. 멈출 때 지나치지 않게 하려는 것입니다.
+- 마커가 안전 구역 안으로 들어오면 그 자리에서 멈춥니다. 그래서 마커는 정확히 가운데가 아니라 안전 구역 안 어딘가에 놓입니다.
+- 한 축만 벗어났으면 그 관절만 돕니다.
+- 마커를 치우면 `marker lost: holding the head`로 멈췄다가 3초 뒤 `going home`으로 정면을 봅니다.
+- 카메라를 기울여 달았으면 `camera_mount.yaml`의 `rpy`와 같은 값을 `head_follow: camera_rpy`에도 넣습니다. 머리 추적은 TF를 읽지 않습니다.
+- 설정 파일(`target_tags.yaml`)의 `head_follow: enabled`를 `true`로 두면 인자 없이도 켜집니다.
+
+> 🟠 시뮬레이터에서 가짜 마커로 10번 돌려 보았습니다(10/08). 마커를 놓았을 때와 4초 동안 밀었을 때 모두 머리가 따라가
+> 안전 구역 안(가운데에서 0.023~0.028 rad)에서 멈췄고, 멈춘 뒤에는 움직이지 않았습니다. 실제 카메라와 실제 로봇에서는
+> 아직 돌려 보지 않았습니다. 가짜 마커에는 영상 지연이 없으므로, 실제 카메라에서 머리가 가운데를 지나쳤다 돌아오면
+> `speed`를 낮추거나 `slow_zone`을 키웁니다.
+
+손을 움직이는 순서와 설정은 [tutorial_cumotion.md 4.7](tutorial_cumotion.md#47-카메라가-본-마커로-움직이기)에 있습니다.
+
+> 실행기로 팔을 움직이는 동안에도 머리는 계속 따라갑니다. 머리는 드라이버의 `head` 스트림 채널만, 팔 궤적은 `arm` 채널만 씁니다.
 
 ---
 
@@ -202,8 +227,8 @@ head: marker found 0.36 m away: tracking
 
 | 이름 | 타입 | 내용 |
 |---|---|---|
-| `/target_marker/pose` | `geometry_msgs/PoseStamped` | 대상 마커 자세, `camera_optical_frame` 기준 (z 앞, x 오른쪽, y 아래) |
-| `/target_marker_<id>/pose` | `geometry_msgs/PoseStamped` | 마커 번호별 |
+| `/rby1/marker/pose` | `geometry_msgs/PoseStamped` | 대상 마커 자세, `camera_optical_frame` 기준 (z 앞, x 오른쪽, y 아래) |
+| `/rby1/marker_<id>/pose` | `geometry_msgs/PoseStamped` | 마커 번호별 |
 | TF `camera_optical_frame → target_marker_<id>` | | 로봇 TF가 발행되고 있으면 `base → target_marker_<id>`로 바로 조회 |
 | `/camera/image_raw` | `sensor_msgs/Image` (`bgr8`) | 카메라 영상 (호스트의 카메라 노드, reliable) |
 | `/camera/camera_info` | `sensor_msgs/CameraInfo` | 카메라 모델(내부 파라미터·왜곡) |
@@ -224,7 +249,7 @@ ros2 run tf2_ros tf2_echo base target_marker_7
 
 ## 5. 종료
 
-터미널 4(예제) → 3(마커 검출) → 2(카메라) → 1(드라이버) 순서로 Ctrl+C.
+터미널 3(마커 검출·머리 추적) → 2(카메라) → 1(드라이버) 순서로 Ctrl+C. 머리 추적은 꺼질 때 `head` 스트림 채널을 닫습니다.
 
 ---
 
@@ -234,19 +259,27 @@ ros2 run tf2_ros tf2_echo base target_marker_7
 |---|---|---|
 | `rby1_apriltag/config/target_tags.yaml` | `size` — 마커 검은 사각형 한 변 (m). 쓰는 마커 모두 같은 크기 | `0.10` |
 | | `tag_family` — 마커 패밀리 | `tag36h11` |
-| | `target_ids` — 찾을 마커 번호 | `[7]` (`[7, 12]`처럼 여러 개) |
+| | `target_ids` — 찾을 마커 번호 | `[7]` (`[7, 8]`처럼 여러 개) |
 | | `filter_jitter`, `window_size` — 최근 몇 프레임으로 떨림을 줄일지 | `true`, `5` |
-| | `broadcast_tf`, `target_frame_prefix` | `true`, `target_marker` |
+| | `broadcast_tf`, `target_frame_prefix` — TF 이름 `target_marker_<id>` | `true`, `target_marker` |
+| | `output_pose_topic`, `marker_topic_prefix` — 토픽 이름 `/rby1/marker/pose`, `/rby1/marker_<id>/pose` | `/rby1/marker/pose`, `/rby1/marker` |
 | `apriltag.launch.py` 인자 | `width`, `height`, `image`, `camera_info`, `config` | `1280`, `720`, `/camera/image_raw`, `/camera/camera_info`, 위 설정 파일 |
 | | `size`, `tag_family`, `ids` — 주면 설정 파일 값을 덮어씀 | 비어 있음(설정 파일 값) |
 | `camera.launch.py` 인자 | `camera`, `source`, `config`, `intrinsics`, `mount`, `rviz` | `webcam`, 설정 파일 값, …, `false` |
 | `rby1_additional_tools/config/webcam.yaml`, `config/realsense.yaml` | 해상도, fps, 노출, 토픽, RealSense 스트림(`use_rgb` `use_depth` `use_ir_left` `use_ir_right`), 보정 파일(`use_custom_intrinsics`, `intrinsics_file`) | 드라이버 저장소 README **Additional Tools** |
-| `22_marker_tracking`, `23_marker_shuttle` 파라미터 (`--ros-args -p 이름:=값`) | 따라갈 마커, 손 오프셋, 머리 속도 등 | [tutorial_cumotion.md 4.7](tutorial_cumotion.md#47-카메라가-본-마커로-움직이기-예제-22-23), 예제 파일 맨 위 |
-
+| `target_tags.yaml`의 `head_follow:` | `enabled`, `marker_id` — 머리 추적을 켤지, 따라갈 마커 | `false`, `7` |
+| | `safe_zone`, `start_zone` — 카메라 시선에서 마커까지의 각(rad). 안전 구역 안이면 멈추고, 시작 구역을 벗어나면 따라감. `start_zone`이 더 커야 함 | `0.03`, `0.10` |
+| | `dwell` — 두 구역 사이에 이보다 오래 있으면 따라감 (s) | `1.0` |
+| | `speed`, `rate` — 따라가는 관절 속도(rad/s)와 명령 주기(Hz). 한 번에 `speed`/`rate` rad | `0.5`, `20.0` |
+| | `slow_zone` — 마커가 이 각(rad) 안으로 들어오면 남은 각에 비례해 느려짐 | `0.25` |
+| | `camera_rpy` — `link_head_2` 기준 `camera_link`의 roll, pitch, yaw (rad). `camera_mount.yaml`의 `rpy`와 같은 값 | `[0.0, 0.0, 0.0]` |
+| | `lost_timeout`, `return_after`, `home` — 놓친 뒤 멈추기까지, `home`으로 돌아가기까지 (s), 돌아갈 머리 각 (rad) | `0.5`, `3.0`, `[0.0, 0.0]` |
+| `target_tags.yaml`의 `marker_target:` | 팔마다 `marker_id`, `offset`(마커 기준 손 위치), `min_move`(이만큼 움직여야 새 목표) | 오른팔 `7`, 왼팔 `8`, `[0, 0, -0.10]`, `0.01` — [tutorial_cumotion.md 4.7](tutorial_cumotion.md#47-카메라가-본-마커로-움직이기) |
+| `apriltag.launch.py`, `marker_target.launch.py` 인자 `follow_head` | 머리 추적을 켤지 | 비어 있음(`head_follow: enabled` 값) |
 ```bash
 ros2 launch rby1_apriltag apriltag.launch.py config:=/경로/my_tags.yaml
 ros2 launch rby1_additional_tools camera.launch.py camera:=realsense config:=/경로/my_realsense.yaml
-ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head -p head.gain:=0.4 -p head.max_speed:=0.5
+ros2 launch rby1_apriltag apriltag.launch.py follow_head:=true config:=/경로/my_tags.yaml   # head_follow: safe_zone, speed 등을 고친 파일
 ```
 
 ---
@@ -254,6 +287,6 @@ ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head -p head.gai
 ## 참고
 
 - [developer_manual.md](developer_manual.md#apriltag) — 파이프라인 구조, 안정화 방법, 마커 예제의 제어, 테스트, [트러블슈팅](developer_manual.md#12-트러블슈팅)
-- 드라이버 저장소 README (`~/ros2_driver_ws/src/rby1_ros2/README.md`) — **Additional Tools**(카메라, 마커 예제)
+- 드라이버 저장소 README (`~/ros2_driver_ws/src/rby1_ros2/README.md`) — **Additional Tools**(단계별 가이드), `Dev_page.md`(카메라 설정, 예제 파라미터)
 - [tutorial_cumotion.md](tutorial_cumotion.md) — 이미지, 컨테이너, 시뮬레이터, 마커로 손 움직이기(§4.7)
 - [Isaac ROS AprilTag (release-3.2)](https://nvidia-isaac-ros.github.io/v/release-3.2/repositories_and_packages/isaac_ros_apriltag/index.html)

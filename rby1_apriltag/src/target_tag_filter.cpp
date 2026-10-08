@@ -3,8 +3,8 @@
 // Takes Isaac ROS AprilTag detections (/tag_detections), keeps the ids in
 // `target_ids`, averages each over its last `window_size` frames (robust_average:
 // translation median, rotation SVD mean) when `filter_jitter`, and publishes
-//   /target_marker/pose            geometry_msgs/PoseStamped, every target in turn
-//   /target_marker_<id>/pose       one topic per target (publish_per_tag_topics)
+//   /rby1/marker/pose              geometry_msgs/PoseStamped, every target in turn (output_pose_topic)
+//   /rby1/marker_<id>/pose         one topic per target (publish_per_tag_topics, marker_topic_prefix)
 //   TF <camera frame> -> target_marker_<id>   (broadcast_tf, target_frame_prefix)
 // in the camera's optical frame, so the head tracker and anything else can take them
 // into the robot's frames through TF.
@@ -30,9 +30,10 @@ public:
     const auto ids = declare_parameter<std::vector<int64_t>>("target_ids", {7});
     targets_.insert(ids.begin(), ids.end());
     const auto input = declare_parameter("input_topic", "/tag_detections");
-    const auto output = declare_parameter("output_pose_topic", "/target_marker/pose");
+    const auto output = declare_parameter("output_pose_topic", "/rby1/marker/pose");
     broadcast_tf_ = declare_parameter("broadcast_tf", true);
-    prefix_ = declare_parameter("target_frame_prefix", "target_marker");
+    frame_prefix_ = declare_parameter("target_frame_prefix", "target_marker");
+    topic_prefix_ = declare_parameter("marker_topic_prefix", "/rby1/marker");
     filter_ = declare_parameter("filter_jitter", true);
     window_ = static_cast<size_t>(std::max<int64_t>(1, declare_parameter("window_size", 5)));
     per_tag_ = declare_parameter("publish_per_tag_topics", true);
@@ -40,8 +41,7 @@ public:
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(output, 10);
     if (per_tag_) {
       for (const auto id : targets_) {
-        per_tag_pubs_[id] = create_publisher<geometry_msgs::msg::PoseStamped>(
-          "/" + prefix_ + "_" + std::to_string(id) + "/pose", 10);
+        per_tag_pubs_[id] = create_publisher<geometry_msgs::msg::PoseStamped>(tag_topic(id), 10);
       }
     }
     if (broadcast_tf_) tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -55,6 +55,8 @@ public:
   }
 
 private:
+  std::string tag_topic(int64_t id) const { return topic_prefix_ + "_" + std::to_string(id) + "/pose"; }
+
   void on_detections(const AprilTagDetectionArray & msg) {
     for (const auto & detection : msg.detections) {
       if (!targets_.count(detection.id)) continue;
@@ -84,16 +86,13 @@ private:
       pose_pub_->publish(out);
       if (per_tag_) {
         auto & publisher = per_tag_pubs_[detection.id];
-        if (!publisher) {
-          publisher = create_publisher<geometry_msgs::msg::PoseStamped>(
-            "/" + prefix_ + "_" + std::to_string(detection.id) + "/pose", 10);
-        }
+        if (!publisher) publisher = create_publisher<geometry_msgs::msg::PoseStamped>(tag_topic(detection.id), 10);
         publisher->publish(out);
       }
       if (broadcast_tf_) {
         geometry_msgs::msg::TransformStamped transform;
         transform.header = out.header;
-        transform.child_frame_id = prefix_ + "_" + std::to_string(detection.id);
+        transform.child_frame_id = frame_prefix_ + "_" + std::to_string(detection.id);
         transform.transform.translation.x = out.pose.position.x;
         transform.transform.translation.y = out.pose.position.y;
         transform.transform.translation.z = out.pose.position.z;
@@ -105,7 +104,7 @@ private:
 
   std::set<int64_t> targets_;
   bool broadcast_tf_, filter_, per_tag_;
-  std::string prefix_;
+  std::string frame_prefix_, topic_prefix_;  // TF target_marker_<id>, topic /rby1/marker_<id>/pose
   size_t window_;
   std::map<int64_t, std::deque<Eigen::Isometry3d>> history_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;

@@ -15,9 +15,17 @@ robot:
   model: ''                     # '' = read from the driver (kind + robot_version); e.g. m_1_2 to insist
   group: right_arm              # right_arm | left_arm | right_arm+torso | left_arm+torso
   enable_robot: true            # turn power and servos on at start
-  ready_if_straight: true       # bend a straight planning arm to the ready pose before starting
+  ready_if_straight: true       # take what is straight to the ready pose before starting: both arms and the torso
   straight_elbow: 0.3           # rad; an elbow closer to 0 than this counts as straight
   ready_time: 4.0               # s for that move
+  # The ready pose, joint angles in rad (right_arm_0 .., left_arm_0 .., torso_0 ..). A part is
+  # moved only when it is straight: an arm by its elbow (4th value) and straight_elbow, the
+  # torso when its knee (3rd value) is under half the angle here -- a torso of all zeros is
+  # never moved. The example coordinates of the tutorial are written for these values.
+  ready_pose:
+    right_arm: [0.0, -0.5, 0.0, -1.57, 0.0, 0.0, 0.0]   # elbow bent 90 deg, arm forward
+    left_arm: [0.0, 0.5, 0.0, -1.57, 0.0, 0.0, 0.0]
+    torso: [0.0, 0.1, -0.2, 0.1, 0.0, 0.0]              # knee bent a little, chest upright
   # The planning arm's body ends at the tool frame (ee_right / ee_left): the SDK's
   # envelope of the wrist also wraps whatever is mounted on it (7 cm past the tool
   # frame, 7.5 cm thick), so the hand could not come near anything. What is mounted
@@ -33,6 +41,46 @@ robot:
   # close on an object. Changeable while running:
   #   ros2 param set /rby1_target_executor free_objects "['gripper_*finger*']"
   free_objects: []
+
+reach:
+  # The arm first, the torso for what the arm is short. With use_torso: a target the
+  # arm reaches from the ready pose has the torso at the ready pose -- it goes back
+  # there if it had moved. For a target further away the arm is taken as stretched as
+  # far as elbow_limit allows and the torso moves the shoulder the rest of the way, to
+  # the posture nearest the ready pose that does it. A target planned from standing: the
+  # torso moves first, then the arm; one out of reach inside the torso's range below is
+  # refused and nothing moves. In tracking mode the torso and the arm move together. For
+  # one-arm groups (right_arm, left_arm). false: the torso never moves.
+  use_torso: false
+  # Before the torso moves, its posture and two on the way there are checked against the
+  # obstacles and the robot itself. false: the planner's model is moved to each posture
+  # (0.84 s each). true: they are checked with a second collision model that has the
+  # torso's joints free (built when the executor starts, 0.5 s; 0.4 ms a posture) -- the
+  # same answers (96 of 96 postures compared), and the torso sets out about 1.7 s sooner.
+  quick_check: false
+  # The elbow (joint 3) is planned no straighter than this. An RB-Y1 arm is fully
+  # stretched -- singular -- at -0.232 rad (-13.3 deg), not at 0: its elbow sits 31 mm off
+  # the line from shoulder to wrist. The default is 5 deg short of that. A value that is
+  # not short of the stretched angle is refused when the executor starts.
+  elbow_limit: -0.319           # rad (-18.3 deg)
+  # What the torso may do, measured from the ready pose (robot.ready_pose):
+  torso_forward: 0.10           # m the chest may go forward
+  torso_down: 0.10              # m the chest may go down
+  torso_pitch: 0.698            # rad (40 deg) the chest may lean forward
+  torso_yaw: 0.698              # rad (40 deg) the chest may turn, either way
+  torso_roll: 0.524             # rad (30 deg) the chest may lean to a side
+  # Of the postures that reach the target, the one nearest the ready pose is taken. In
+  # "nearest", a radian of turning (torso_5) and of leaning sideways (torso_0, torso_4)
+  # counts this many times a radian of leaning forward: above 1, the torso leans forward
+  # first and turns or leans sideways only for what that does not reach.
+  turn_cost: 3.0
+  side_cost: 6.0
+  # When the torso is used it brings the target this far inside the arm's reach, so the arm
+  # does not end at its very limit -- and a target wandering about the edge of the arm's
+  # reach does not send the torso back and forth.
+  torso_margin: 0.03            # m
+  torso_time: 3.0               # s the torso's move takes at least (a target planned from standing)
+  torso_speed: 0.3              # rad/s, the fastest a torso joint goes in tracking mode
 
 motion:
   # How long a move takes. With duration 0 it follows from the limits below:
@@ -64,7 +112,7 @@ impedance:
   torque_limit: 50.0            # N·m per joint
 
 tracking:
-  # Tracking mode (ros2 service call /rby1_target_executor/set_tracking std_srvs/srv/SetBool
+  # Tracking mode (ros2 service call /rby1/target_executor/set_tracking std_srvs/srv/SetBool
   # "{data: true}"): each target only moves a goal; a follower takes one step toward it
   # at `rate` Hz from the state it last commanded and sends it to the driver's
   # stream_joint. The targets are smoothed (`smoothing`) and a moving one is aimed
@@ -103,7 +151,7 @@ tracking:
   lead_max: 0.1                 # m, at most this far ahead
 
 avoid:
-  # Obstacles that appear while the arm moves (rby1_cumotion/avoidance.py). The next
+  # Obstacles that appear while the arm moves (rby1_cumotion/executor/avoidance.py). The next
   # `horizon` seconds of the running trajectory are checked against the planning
   # scene; on a collision, cuRobo plans again from where the arm will be `lead`
   # seconds later and how fast it moves there, and the result replaces the running
@@ -115,19 +163,25 @@ avoid:
   # of, when avoiding lasts give_up_after, or when max_replans new paths did not get
   # through.
   enabled: true
+  # Who plans a target from standing. false: MoveIt and the cuMotion planner node
+  # (about 150 ms). true: this executor's own cuRobo (needs enabled), first without
+  # cuRobo's graph search (about 77 ms) and, when that finds no path, once more with it
+  # (about 120 ms more). With reach.use_torso the executor plans by itself either way;
+  # this then only adds the try without the graph search.
+  plan_in_executor: false
   horizon: 0.5                  # s of the trajectory ahead that is checked
   lead: 0.2                     # s from now the replacement takes over; covers planning (~0.1 s)
   give_up_after: 5.0            # s of continuous avoiding (without stopping) before FAILED
   wait_before_replan: 2.0       # s stopped and blocked before a new path is planned from there
   max_replans: 3                # new paths planned while stopped, per target; then FAILED
-  check_period: 0.05            # s between checks
+  check_period: 0.1             # s between checks
   scene_period: 0.1             # s between planning scene reads
   sweep_time: 1.0               # s a moving obstacle is swept ahead along its velocity
   replan_time: 0.15             # s a replan may take; a collision closer than this stops the arm
   stop_time: 0.6                # s of braking for a moving obstacle (shorter when it is closer)
   replan_seeds: 4               # trajopt seeds of the replanner (1..32)
   replan_steps: 24              # trajopt waypoints of the replanner (4..256)
-  replan_iters: 100             # trajopt and finetune iterations of the replanner (10..5000, 0 = cuRobo's)
+  replan_iters: 50              # trajopt and finetune iterations of the replanner (10..5000, 0 = cuRobo's)
 
 planner:
   # --- Trajectory optimisation -------------------------------------------------
@@ -135,7 +189,7 @@ planner:
   num_trajopt_seeds: 6            # parallel trajopt seeds; costs GPU memory, not much time (1..32)
   num_graph_seeds: 6              # graph-search seeds used when trajopt alone fails (1..32)
   max_attempts: 10                # retries before reporting failure (1..100)
-  trajopt_finetune_iters: 400     # final polish; the main time <-> smoothness knob (1..5000)
+  trajopt_finetune_iters: 100     # final polish; the main time <-> smoothness knob (1..5000)
   interpolation_dt: 0.025         # output timestep in seconds (0.001..0.5)
 
   # --- Inverse kinematics (cuRobo; MoveIt's kinematics.yaml is NOT used) --------

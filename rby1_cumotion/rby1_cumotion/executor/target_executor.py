@@ -7,11 +7,12 @@ emergency stop, control manager faults, the robot kind against the bundle --
 turns power and servos on (robot.enable_robot) and warms the planner. Then it
 waits.
 
-Each message on `target_topic` is a std_msgs/Float64MultiArray of 16 values: a
+Each message on `target_topic` (the group's arm's own: /rby1/right_arm/target_pose
+or /rby1/left_arm/target_pose) is a std_msgs/Float64MultiArray of 16 values: a
 row-major homogeneous transform of the group's tool frame in the bundle's base
 frame. For each one: plan with cuMotion, time the path (motion.* in
 config/cumotion.yaml), and run it through the driver's follow_joint_trajectory.
-Progress goes out on `status_topic` as plain strings: READY, PLANNING,
+Progress goes out on `status_topic` (/rby1/<arm>/target_status) as plain strings: READY, PLANNING,
 EXECUTING, DONE, REPLACED, or FAILED: <reason>.
 
 How long a move takes: `duration` > 0 fixes it. With 0 it is the longest of
@@ -42,30 +43,34 @@ Moves the robot.
 """
 
 import collections
+import math
 import time
 
 import numpy as np
-from moveit_msgs.msg import PlanningScene, PlanningSceneComponents
+from moveit_msgs.msg import PlanningScene, PlanningSceneComponents, RobotTrajectory
 from moveit_msgs.srv import ApplyPlanningScene, GetPlanningScene
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from rcl_interfaces.srv import GetParameters
 import rclpy
+from rclpy.parameter import Parameter
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import SetBool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
+from rby1_msgs.action import Rby1JointCommand
 from rby1_msgs.msg import RobotState
 from rby1_cumotion import planner_params, settings
-from rby1_cumotion.attached import allow_touching, attached_spheres, flatten, free_names
-from rby1_cumotion.avoidance import (Avoider, clear_of, HOPELESS, MotionTracker, objects_from_scene,
-                                     swept)
-from rby1_cumotion.driver import check_driver_model, robot_problem
-from rby1_cumotion.execution import (ahead, back_off, DriverExecutor, impedance_request, motion_duration,
-                                     resume_from, retime, seconds, slow_to_stop, splice, stamp,
-                                     state_at, times_of, ToolChain)
-from rby1_cumotion.model import ATTACHED_LINK
-from rby1_cumotion.planning import check_transform, PlanningClient, run_node
-from rby1_cumotion.tracking import Servo, TargetMotion, Tracker
+from rby1_cumotion.bringup.driver import check_driver_model, robot_problem
+from rby1_cumotion.executor.attached import allow_touching, attached_spheres, flatten, free_names
+from rby1_cumotion.executor.avoidance import (Avoider, clear_of, HOPELESS, MotionTracker, objects_from_scene,
+                                              swept)
+from rby1_cumotion.executor.execution import (ahead, back_off, DriverExecutor, impedance_request, motion_duration,
+                                              OPENED, resume_from, retime, seconds, slow_to_stop, splice, stamp,
+                                              state_at, stream_channels, times_of, ToolChain)
+from rby1_cumotion.executor.reach import Follow, JOINTS as TORSO_JOINTS, limit_elbows, Reach, TOOLS
+from rby1_cumotion.executor.tracking import Servo, TargetMotion, Tracker
+from rby1_cumotion.model import activate, ACTIVE_BUNDLE, active_record, ATTACHED_LINK, load_model, resolve_bundle
+from rby1_cumotion.planning import check_transform, PlanningClient, run_node, validate_trajectory
 
 MOTION = tuple(settings.SECTIONS['motion'])
 # Tracking mode carries a target on along its velocity for this long while the next one is due.
@@ -81,17 +86,28 @@ PLAN_DT = 0.025
 # path's own timing), how long the waiting pose must stay clear, and how early or
 # late the obstacle may be against its measured velocity.
 BACK_OFFS = (0.25, 0.5, 1.0, 1.5)
+# reach.use_torso: at how many postures on the torso's way (the last one its end) the robot
+# is checked against the obstacles before the torso moves. Each costs a relock, 0.4 s.
+TORSO_CHECKS = 3
 WAIT_WINDOW = 2.0
 TIME_MARGIN = 0.3
+
+
+def arm_topics(srdf_groups):
+    """Where a group's targets come in and its progress goes out: its arm's own topics."""
+    arms = [part for part in srdf_groups if part in ('right_arm', 'left_arm')]
+    if len(arms) != 1:
+        raise ValueError(f'Group {"+".join(srdf_groups)} must hold exactly one of right_arm and left_arm')
+    return f'/rby1/{arms[0]}/target_pose', f'/rby1/{arms[0]}/target_status'
 
 
 def hopeless(status):
     """Why a replan that cannot succeed stopped the arm."""
     if status.startswith('INVALID_START_STATE'):
         return (f'obstacle already touches the arm ({status}); stopped. Move it off the arm '
-                '(ros2 run rby1_moveit_scene scene list) and send the target again')
+                '(ros2 run rby1_moveit_objects scene list) and send the target again')
     return (f'no way around the obstacle to the target ({status}); stopped. Move the obstacle '
-            '(ros2 run rby1_moveit_scene scene list) or send another target')
+            '(ros2 run rby1_moveit_objects scene list) or send another target')
 
 
 class TargetExecutor(PlanningClient):
@@ -100,10 +116,12 @@ class TargetExecutor(PlanningClient):
         # targets and `ros2 param set /rby1_target_executor ...` go to the same place.
         super().__init__('rby1_target_executor', extra={
             'config': '',
-            'target_topic': '/rby1/target_pose',
-            'status_topic': '/rby1/target_status',
+            'target_topic': '',  # '': the arm's own, /rby1/<arm>/target_pose
+            'status_topic': '',  # '': /rby1/<arm>/target_status
             'attach_action': '/planner_attach_object',  # the cuMotion planner's UpdateLinkSpheres
         })
+        own = dict(zip(('target_topic', 'status_topic'), arm_topics(self.metadata['srdf_groups'])))
+        self.set_parameters([Parameter(name, value=topic) for name, topic in own.items() if not self.param(name)])
         # Defaults for the rest come from the settings file, like everything else.
         config = settings.load(self.param('config') or None)
         for name in ('driver_namespace', 'enable_robot'):
@@ -117,11 +135,28 @@ class TargetExecutor(PlanningClient):
         self.avoid = config['avoid']
         self.tracking_cfg = config['tracking']
         self.follower, self.tracking = None, False  # the tracking-mode MPC (self.tracker: moving obstacles)
-        self.create_service(SetBool, '~/set_tracking', self.on_set_tracking)
+        # Under /rby1/ like every topic of the robot, not under this node's name.
+        self.create_service(SetBool, '/rby1/target_executor/set_tracking', self.on_set_tracking)
         # Read by the examples: obstacles that move need a planner that watches the way.
         self.declare_parameter('watches_while_moving', bool(self.avoid['enabled']),
                                ParameterDescriptor(read_only=True))
+        # A far target shared between the arm and the torso (reach.py). Off: the torso never moves.
+        self.reach, self.reach_cfg = None, config['reach']
+        if self.reach_cfg['use_torso']:
+            active = self.metadata['active_joints']
+            arms = [arm for arm in TOOLS if f'{arm}_0' in active]
+            if len(arms) != 1 or any(name.startswith('torso') for name in active) or not self.avoid['enabled']:
+                raise ValueError('reach.use_torso is for a one-arm group (right_arm or left_arm) with avoid.enabled: '
+                                 f'the group is {self.metadata["group"]}, avoid.enabled {self.avoid["enabled"]}. '
+                                 'Set reach.use_torso false, or change those')
+            # Before cuRobo is loaded from it: the elbow is planned no straighter.
+            limit_elbows(self.robot, self.reach_cfg['elbow_limit'])
+            self.reach = Reach(self.robot, arms[0], self.reach_cfg, config['robot']['ready_pose']['torso'])
+            self.torso_rest = {f'torso_{i}': self.metadata['locked_joints'][f'torso_{i}'] for i in range(6)}
         self.avoider = None
+        if self.avoid['plan_in_executor'] and not self.avoid['enabled']:
+            raise ValueError('avoid.plan_in_executor plans with the cuRobo that avoid.enabled loads: '
+                             'set avoid.enabled true, or avoid.plan_in_executor false')
         if self.avoid['enabled']:
             path = self.param('config') or str(settings.default_path())
             planner = planner_params.parse(lambda name: planner_params.FROM_CONFIG,
@@ -130,6 +165,8 @@ class TargetExecutor(PlanningClient):
             self.avoider = Avoider(self.metadata, self.robot, planner, ground=planner['add_ground_plane'],
                                    seeds=self.avoid['replan_seeds'], steps=self.avoid['replan_steps'],
                                    iters=self.avoid['replan_iters'])
+            if self.reach is not None and self.reach_cfg['quick_check']:
+                self.avoider.unlock(*self.torso_model(arms[0]))
             self.scene_client = self.create_client(GetPlanningScene, '/get_planning_scene')
             self.scene_future, self.scene_read = None, 0.0
             self.scene = ([], {}, 0.0)
@@ -139,8 +176,7 @@ class TargetExecutor(PlanningClient):
         self.trajectory_runner.impedance = lambda: impedance_request(
             {name: self.param(f'impedance.{name}') for name in settings.SECTIONS['impedance']},
             self.metadata['active_joints'], self.metadata['default_positions'])
-        self.trajectory_runner.stream_is_on = lambda: bool(
-            self.robot_state is not None and self.robot_state.robot_stream_state)
+        self.trajectory_runner.channels = stream_channels(self.metadata['active_joints'])
         self.driver = self.trajectory_runner.driver
         self.chain = ToolChain(self.robot, self.metadata['tool_frame'])
         self.robot_state = None
@@ -152,6 +188,7 @@ class TargetExecutor(PlanningClient):
         # Modules attached to robot links in MoveIt's scene, mirrored to cuMotion (attached.py).
         self.attached_scene = self.create_client(GetPlanningScene, '/get_planning_scene')
         self.attached_future, self.attached_read, self.attached_key = None, 0.0, None
+        self.attached_spheres = []  # what sync_attached last put on the hand
         # MoveIt checks every path against its own model (the URDF, gripper included):
         # what is free for cuMotion must be allowed to touch there too.
         self.apply_scene = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
@@ -270,6 +307,7 @@ class TargetExecutor(PlanningClient):
             return
         self.allow_in_moveit(free_names(objects, self.robot, free))
         self.send_link_spheres(spheres)
+        self.attached_spheres = spheres
         if self.avoider is not None:
             self.avoider.attach(spheres, ATTACHED_LINK)
         if self.follower is not None:
@@ -375,9 +413,15 @@ class TargetExecutor(PlanningClient):
         measured = self.fresh_snapshot()
         follower.start([measured[name] for name in names])
         self.sync_attached(wait=True)
-        owns = not (self.robot_state is not None and self.robot_state.robot_stream_state)
         self.trajectory_runner.apply_impedance()  # stream_joint follows the same switch
-        self.driver.switch('stream_control', True)
+        # reach.use_torso: the torso follows too, for what the arm is short (reach.Follow).
+        torso, arm_channels = None, self.trajectory_runner.channels
+        if self.reach is not None:
+            torso = Follow(self.reach, [self.torso_rest[name] for name in TORSO_JOINTS],
+                           [measured[name] for name in TORSO_JOINTS], self.reach_cfg['torso_speed'])
+            self.trajectory_runner.channels = (*arm_channels, 'torso')
+        aimed, seen, seen_at, torso_note = None, np.eye(4), 0.0, None
+        self.trajectory_runner.open_stream()
         refused = {'count': 0}
 
         def answered(future):
@@ -397,13 +441,27 @@ class TargetExecutor(PlanningClient):
         try:
             while self.tracking and rclpy.ok():
                 rclpy.spin_once(self, timeout_sec=0.0)
+                now = time.monotonic()
+                if torso is not None:
+                    # Where the arm's model sees things: it has the torso where the launch found
+                    # it. For the obstacles this is refreshed five times a second at most, and
+                    # only when the chest has moved 2 mm or turned as much: each is a new world.
+                    # From where the torso is commanded: its command and the arm's go out together
+                    # and are followed about as late. (Tried and taken out: from where the torso
+                    # is measured, carried on command_delay at its measured speed -- the hand was
+                    # further off while the torso moved, 6-7 mm on average against 4, worst 38
+                    # against 29.)
+                    modelled = torso.as_modelled()
+                    if now - seen_at >= 0.2 and np.abs(modelled - seen).max() > 2e-3:
+                        seen, seen_at = modelled, now
                 if self.avoider is not None:
                     self.refresh_scene()
                     objects, moving, _ = self.scene
-                    follower.world([obj for obj in objects if obj['name'] not in moving]
-                                   + swept(objects, moving, self.avoid['sweep_time']))
+                    standing = ([obj for obj in objects if obj['name'] not in moving]
+                                + swept(objects, moving, self.avoid['sweep_time']))
+                    follower.world(standing if torso is None
+                                   else [dict(obj, pose=seen @ obj['pose']) for obj in standing])
                 self.sync_attached()
-                now = time.monotonic()
                 if self.pending is not None:
                     # Timed when it arrived, not at this tick: ticks are 20 ms apart, targets
                     # from a 30 Hz camera 33 ms, and the speed is their difference over that time.
@@ -414,15 +472,25 @@ class TargetExecutor(PlanningClient):
                         self.report('TRACKING: following again')
                 elif last_target is not None and not holding and now - last_target > cfg['stale_after']:
                     holding = True  # the goal stays: the arm settles at the last target
-                    follower.aim(motion.at())  # no longer moving: aim at it, not ahead of it
+                    aimed = (motion.at(), np.zeros(3))  # no longer moving: aim at it, not ahead of it
+                    follower.aim(aimed[0])
                     self.report(f'TRACKING: no target for {cfg["stale_after"]:.1f}s; holding at the last one')
                 if last_target is not None and not holding:
                     # Aim where a moving target will be -- the follower and the robot trail it --
                     # every tick, from where the targets put it, how fast it moves and how old
                     # the last one is.
                     ahead = cfg['lead'] + follower.lag
-                    follower.aim(motion.at(now, ahead, cfg['lead_max'], CARRY_ON),
-                                 motion.heading(now, ahead, CARRY_ON))
+                    aimed = (motion.at(now, ahead, cfg['lead_max'], CARRY_ON), motion.heading(now, ahead, CARRY_ON))
+                    follower.aim(*aimed)
+                if torso is not None and aimed is not None:
+                    # The torso stands for the target; the arm gets the target as its model sees
+                    # it, every tick: the torso moves under a target that stands still, too.
+                    torso.ask(aimed[0])
+                    follower.aim(modelled @ aimed[0], modelled[:3, :3] @ aimed[1])
+                    if torso.note != torso_note:
+                        torso_note = torso.note
+                        self.report(f'TRACKING: {torso_note}' if torso_note
+                                    else 'TRACKING: the target is in reach again')
                 stepped = time.monotonic()
                 positions, speeds = follower.step()
                 stats['step'] += time.monotonic() - stepped
@@ -434,6 +502,9 @@ class TargetExecutor(PlanningClient):
                     self.get_logger().debug(f'tracking: {stats["ticks"] / (now - stats["since"]):.1f} Hz, step '
                                             f'{stats["step"] / stats["ticks"] * 1000:.1f} ms')
                     stats.update(ticks=0, step=0.0, since=now)
+                if torso is not None:  # the posture check follows the torso while it is commanded here
+                    self.metadata['locked_joints'].update(
+                        {name: self.state[name][0] for name in TORSO_JOINTS if name in self.state})
                 try:
                     current, measured_at = self.snapshot(), now
                 except ValueError as error:  # a late joint state: check the next tick
@@ -464,6 +535,9 @@ class TargetExecutor(PlanningClient):
                         command = getattr(goal.command, part)
                         command.position = [float(positions[i]) for i in index]
                         command.minimum_time = period
+                if torso is not None:
+                    goal.command.torso.position = [float(q) for q in torso.step(period)]
+                    goal.command.torso.minimum_time = period
                 stream.send_goal_async(goal).add_done_callback(answered)
                 if refused['count'] > int(cfg['rate']):  # a second of refusals
                     raise RuntimeError('the driver refuses stream_joint (a trajectory or another command holds the '
@@ -476,13 +550,15 @@ class TargetExecutor(PlanningClient):
         finally:
             self.tracking = False
             self.pending = None
-            if owns:
-                try:
-                    self.driver.switch('stream_control', False)
-                except Exception as error:
-                    self.get_logger().warn(f'stream_control off: {error}')
-                self.trajectory_runner.stream_closed = time.monotonic()
+            self.trajectory_runner.close_stream()
             stream.destroy()
+            if torso is not None:
+                torso.close()
+                self.trajectory_runner.channels = arm_channels
+                # Targets planned from standing find the models with the torso where it stopped.
+                for _ in range(10):
+                    rclpy.spin_once(self, timeout_sec=0.05)
+                self.set_torso({name: self.state[name][0] for name in TORSO_JOINTS})
         self.report('READY')
 
     def execute_avoiding(self, trajectory, target):
@@ -541,12 +617,29 @@ class TargetExecutor(PlanningClient):
             self.waiting = None
         runner.finish(final, self.snapshot)
 
-    def collision(self, rows, times, names):
-        """(first of `rows` -- the arm `times` s from now -- that meets an obstacle, by a moving one?)."""
+    def collision(self, rows, times, names, torso=None):
+        """(first of `rows` -- the arm `times` s from now -- that meets an obstacle, by a moving one?).
+
+        `torso`: with the torso's joints at {joint: rad} instead of where the models have them
+        (reach.quick_check).
+        """
         objects, moving, read = self.scene
         # Moving obstacles are compared where they will be then, counted from the reading.
         return self.avoider.first_hit(rows, names, np.asarray(times) + (time.monotonic() - read),
-                                      [obj for obj in objects if obj['name'] in moving], moving)
+                                      [obj for obj in objects if obj['name'] in moving], moving, locked=torso)
+
+    def torso_model(self, arm):
+        """(metadata, URDF) of the group of `arm` and the torso, at the posture of the launch:
+        the model reach.quick_check checks the torso's postures with."""
+        directory = resolve_bundle(self.param('model_directory'))
+        record = active_record(directory)
+        bundle = activate(record['source'] if record else directory, f'{arm}+torso',
+                          destination=ACTIVE_BUNDLE.with_name(ACTIVE_BUNDLE.name + '_torso'),
+                          positions=self.metadata['default_positions'],
+                          body_ends_at_tool=self.metadata['body_ends_at_tool'])
+        metadata, root = load_model(bundle)
+        limit_elbows(root, self.reach_cfg['elbow_limit'])
+        return metadata, root
 
     def trajectory_collision(self, trajectory, names):
         rows = np.array([point.positions for point in trajectory.points], dtype=float)
@@ -755,6 +848,10 @@ class TargetExecutor(PlanningClient):
         runner = self.trajectory_runner
         target, self.pending = self.pending, None
         self.report('REPLACED by a newer target')
+        if self.reach is not None and self.reach.short(self.snapshot(), target) > 0.0:
+            # The torso is moved for a target sent to a standing arm only.
+            raise RuntimeError('new target: it is beyond the arm from where the torso is, and the torso is not '
+                               'moved while the arm moves (reach.use_torso). Send it again once the arm has stopped')
         status = 'not tried'
         for _ in range(4):  # a plan that finishes after its join time is planned again
             started = time.monotonic()
@@ -798,7 +895,7 @@ class TargetExecutor(PlanningClient):
         while runner.now() < rest_at and not runner.done():
             rclpy.spin_once(self, timeout_sec=self.avoid['check_period'])
         self.report('PLANNING the new target from standing')
-        planned = self.measure(target=target)
+        planned = self.plan_target(target, torso=False)
         path = planned['trajectory'].joint_trajectory
         duration, reason = self.move_duration(path)
         trajectory, load = retime(path, duration, runner.step, self.metadata['joint_limits'])
@@ -807,6 +904,155 @@ class TargetExecutor(PlanningClient):
         self.report(f'EXECUTING toward the new target planner_time={planned["planner_time"]:.3f}s '
                     f'duration={duration:.2f}s ({reason}) peak_velocity={load * 100:.0f}%')
         return target
+
+    def plan_target(self, target, torso=True):
+        """A validated plan from standing to `target`: {'trajectory', 'planner_time'}.
+
+        Without reach.use_torso MoveIt and the cuMotion planner node plan, as always --
+        unless avoid.plan_in_executor. With reach.use_torso the plan is made in this
+        process, and the torso may be moved first (plan_sharing) unless `torso` is false.
+        """
+        if self.reach is None and not self.avoid['plan_in_executor']:
+            return self.measure(target=target)
+        if self.reach is not None and torso:
+            return self.plan_sharing(target)
+        self.refresh_scene(wait=True)
+        return self.plan_here(self.fresh_snapshot(), target)
+
+    def plan_here(self, current, target, where=''):
+        """Plan the arm from the joints `current` to `target` in this process -- the cuMotion
+        planner node has the torso where the launch found it -- with the torso where the
+        models of this process have it."""
+        names = list(self.metadata['active_joints'])
+        q = np.array([current[name] for name in names])
+        self.plan_around(q, names)
+        started = time.monotonic()
+        quick = self.avoid['plan_in_executor']
+        path, status = self.avoider.replan(q, np.zeros(len(names)), target, names, attempts=4, graph=not quick)
+        if path is None and quick and status not in HOPELESS:
+            # The graph search gets through scenes the optimiser alone does not.
+            path, status = self.avoider.replan(q, np.zeros(len(names)), target, names, attempts=4)
+        if path is None:
+            raise RuntimeError(f'planning failed{where}: {hopeless(status) if status in HOPELESS else status}')
+        plan = RobotTrajectory()
+        plan.joint_trajectory.joint_names = names
+        for index, row in enumerate(path):
+            plan.joint_trajectory.points.append(JointTrajectoryPoint(
+                positions=list(map(float, row)), time_from_start=stamp(index * PLAN_DT)))
+        validate_trajectory(plan.joint_trajectory, self.metadata, current)
+        return {'trajectory': plan, 'planner_time': time.monotonic() - started}
+
+    def set_torso(self, pitch):
+        """The models and the posture checks take the torso's pitch joints as {joint: rad}."""
+        self.avoider.relock(pitch)
+        for record in ('locked_joints', 'default_positions'):
+            self.metadata[record].update(pitch)
+        self.avoider.attach(self.attached_spheres, ATTACHED_LINK)  # relock drops what the hand carries
+
+    def plan_sharing(self, target):
+        """reach.use_torso: the arm alone when it reaches, else the torso moves the shoulder
+        what the arm is short and the arm is planned from there.
+
+        Everything is planned before anything moves: the torso's posture, that the robot
+        is clear of obstacles there and on the way, and the arm's path from it. When one
+        of them fails the models go back to where the torso is and the target is refused.
+        """
+        current = self.fresh_snapshot()
+        self.refresh_scene(wait=True)
+        short = self.reach.short(current, target)
+        posture = self.reach.share(current, target)  # OutOfReach: refused, nothing moved
+        if posture is None:
+            return self.plan_here(current, target)
+        names = list(self.metadata['active_joints'])
+        q = np.array([[current[name] for name in names]])
+        before = {name: current[name] for name in TORSO_JOINTS}
+        _, forward, down, lean, side, turn = self.reach.torso(np.array([[posture[name] for name in TORSO_JOINTS]]))
+        self.report(('PLANNING with the torso: ' + (
+            f'the target is {short * 100:.1f} cm beyond the arm' if short > 0.0
+            else 'the arm reaches the target from nearer the ready pose, the torso goes back'))
+            + f'; the chest would be {forward[0] * 100:.1f} cm forward and {down[0] * 100:.1f} cm down of the ready '
+            f'pose, leaning {math.degrees(lean[0]):.0f} deg forward and {math.degrees(side[0]):+.0f} deg sideways, '
+            f'turned {math.degrees(turn[0]):+.0f} deg')
+        quick = self.reach_cfg['quick_check']
+        moved = False  # the models have the torso somewhere else than it is
+        try:
+            for step in range(1, TORSO_CHECKS + 1):  # the last is the torso's posture itself
+                share = step / TORSO_CHECKS
+                there = {name: before[name] + share * (posture[name] - before[name]) for name in TORSO_JOINTS}
+                if not quick:
+                    moved = True
+                    self.set_torso(there)
+                if self.collision(q, [0.0], names, torso=there if quick else None)[0] is not None:
+                    raise RuntimeError('planning failed: the robot would meet an obstacle, or itself, '
+                                       f'{share * 100:.0f}% into the torso\'s move')
+            if quick:  # checked without moving the models: the arm is planned with the torso there
+                moved = True
+                self.set_torso(posture)
+            self.plan_here(current, target, ' with the torso moved')
+        except Exception as error:
+            if moved:
+                self.set_torso(before)  # nothing moved: the models go back to where the torso is
+            if short > 0.0:
+                raise
+            # Going back was only tidier: the arm reaches the target from where the torso is.
+            self.get_logger().warn(f'the torso stays where it is ({error}); planning the arm from here')
+            return self.plan_here(current, target)
+        try:
+            self.move_torso(current, posture)
+        finally:
+            # The torso stops a little off what it was sent (up to move_torso's tolerance), or short
+            # when its move failed: the models follow where it really is. The arm is planned
+            # from there, or the hand ends that much off (1.3 mm seen).
+            # All six: the two roll joints are not moved, but each move left them 0.1 mrad
+            # further off, and after ten the hand was 1.2 mm from its target.
+            self.set_torso({f'torso_{i}': self.state[f'torso_{i}'][0] for i in range(6)})
+        return self.plan_here(self.fresh_snapshot(), target, ' with the torso moved')
+
+    def move_torso(self, current, pitch, settle=10.0, tolerance=0.01):
+        """Send the torso joints in `pitch` ({joint: rad}) through the driver; the arms keep their joints."""
+        goal = Rby1JointCommand.Goal()
+        # The joints not in `pitch` are sent where the launch found them, not where they are
+        # now: sent where they are, they crept a little further with every move.
+        goal.torso.position = [float(pitch.get(f'torso_{i}', self.torso_rest[f'torso_{i}'])) for i in range(6)]
+        goal.torso.minimum_time = float(self.reach_cfg['torso_time'])
+        self.report(f'EXECUTING the torso\'s move ({self.reach_cfg["torso_time"]:.1f} s)')
+        client = self.driver.action(Rby1JointCommand, 'robot_joint')
+
+        def send():
+            handle = self.wait(client.send_goal_async(goal), 10.0)
+            if not handle.accepted:
+                raise RuntimeError('the driver rejected the torso\'s move')
+            return self.wait(handle.get_result_async(), self.reach_cfg['torso_time'] + 30.0).result
+        try:
+            result = send()
+            if not result.success and 'not open' in result.finish_code:
+                # Someone has a stream channel open (the head follower): the torso then needs its own.
+                owned = self.driver.switch('stream_control', True, 'torso').message.startswith(OPENED)
+                try:
+                    result = send()
+                finally:
+                    if owned:
+                        self.driver.switch('stream_control', False, 'torso')
+                        self.trajectory_runner.stream_closed = time.monotonic()
+            if not result.success:
+                raise RuntimeError(f'the torso\'s move failed: {result.finish_code}')
+        finally:
+            client.destroy()
+        # There, and at rest: the arm is planned from where the torso is found afterwards.
+        deadline, last, still = time.monotonic() + settle, None, 0
+        while True:
+            end = time.monotonic() + 0.1
+            while time.monotonic() < end:
+                rclpy.spin_once(self, timeout_sec=0.02)
+            now = {name: self.state[name][0] for name in pitch}
+            off = {name: round(now[name] - value, 4) for name, value in pitch.items()
+                   if abs(now[name] - value) > tolerance}
+            still = still + 1 if last and max(abs(now[name] - last[name]) for name in pitch) < 1e-4 else 0
+            last = now
+            if not off and still >= 3:
+                return
+            if time.monotonic() > deadline:
+                raise RuntimeError(f'the torso did not reach its posture and rest there: {off or "still moving"}')
 
     def detour_time(self, path, names):
         """The replanned path at cuRobo's own pace, slowed only as the motion limits require.
@@ -843,7 +1089,7 @@ class TargetExecutor(PlanningClient):
             problem = robot_problem(self.robot_state)
             if problem:
                 raise RuntimeError(problem)
-            planned = self.measure(target=target)
+            planned = self.plan_target(target)
             path = planned['trajectory'].joint_trajectory
             duration, reason = self.move_duration(path)
             trajectory, load = retime(path, duration, self.param('step'),

@@ -10,9 +10,39 @@ target_tag_filter:
   ros__parameters:
     target_ids: [7,8]                   # 필터링할 AprilTag ID 화이트리스트
     input_topic: "/tag_detections"     # Isaac ROS cuAprilTag 감지 토픽
-    output_pose_topic: "/target_marker/pose" # 표준 ROS 2 PoseStamped 토픽
+    output_pose_topic: "/rby1/marker/pose" # 표준 ROS 2 PoseStamped 토픽
     broadcast_tf: true                 # TF 변환 브로드캐스트 여부
     target_frame_prefix: "target_marker" # TF child frame 이름 접두사 (예: target_marker_7)
     filter_jitter: true                # 순방향 행렬 중앙값+SVD 기반 지터 억제 활성화
     window_size: 5                     # 평활화 슬라이딩 윈도우 크기 (프레임 단위)
-    publish_per_tag_topics: true       # ID별 /target_marker_<id>/pose 토픽 분리 발행 여부
+    publish_per_tag_topics: true       # ID별 /rby1/marker_<id>/pose 토픽 분리 발행 여부
+    marker_topic_prefix: "/rby1/marker" # ID별 토픽 이름 접두사 (예: /rby1/marker_7/pose). head_follow·marker_target도 같은 이름을 씁니다
+
+# 머리가 마커를 따라가게 (apriltag.launch.py, marker_target.launch.py). 켜면 로봇 머리가 움직입니다.
+head_follow:
+  ros__parameters:
+    enabled: false                     # true면 런치가 head_follow 노드를 띄웁니다. 이번만: follow_head:=true / false
+    marker_id: 7                       # 따라갈 마커. target_ids에 있어야 합니다
+    safe_zone: 0.03                    # rad, 카메라 시선에서 마커까지의 각. 이 안이면 머리가 가만히 있음
+    start_zone: 0.10                   # rad, 이보다 벗어나면 바로 따라감. safe_zone보다 커야 합니다
+    dwell: 1.0                         # s, 두 구역 사이에 이보다 오래 머물면 따라감
+    speed: 0.5                         # rad/s, 따라가는 동안 머리 관절의 최고 속도 (한 번에 speed / rate 만큼)
+    slow_zone: 0.25                    # rad, 마커가 이 안으로 들어오면 남은 각에 비례해 느려짐 (영상 지연으로 지나치지 않게)
+    rate: 20.0                         # Hz, 명령 주기
+    camera_rpy: [0.0, 0.0, 0.0]        # rad, link_head_2 기준 camera_link의 roll, pitch, yaw.
+                                       # rby1_additional_tools/config/camera_mount.yaml의 rpy와 같은 값을 넣습니다 (TF는 읽지 않음)
+    lost_timeout: 0.5                 # s, 마커가 이만큼 안 보이면 머리를 멈춤
+    return_after: 3.0                  # s, 이만큼 안 보이면 home으로, speed로 (0: 돌아가지 않음)
+    home: [0.0, 0.0]                   # rad, head_0, head_1
+
+# 마커를 팔 목표로 (marker_target.launch.py). 실행기가 떠 있으면 로봇이 움직입니다.
+marker_target:
+  ros__parameters:
+    frame: "base"                      # 목표를 내는 좌표계
+    min_move: 0.01                     # m. 마지막으로 보낸 목표에서 이만큼 달라져야 새 목표를 보냅니다
+    right_arm:                         # /rby1/right_arm/target_pose 로 나갑니다
+      marker_id: 7                     # 오른손이 따라갈 마커. target_ids에 있어야 합니다 (-1: 쓰지 않음)
+      offset: [0.0, 0.0, -0.10]        # m. 마커에서 손 목표까지, frame 축 기준 (기본: 마커 10 cm 아래)
+    left_arm:                          # /rby1/left_arm/target_pose 로 나갑니다
+      marker_id: 8
+      offset: [0.0, 0.0, -0.10]

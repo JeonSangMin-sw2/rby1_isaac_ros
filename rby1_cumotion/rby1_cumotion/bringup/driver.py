@@ -66,26 +66,28 @@ class Driver:
         return client
 
 
-# Elbow bent 90 deg, arm forward: away from the straight-arm singularity, and
-# the posture the tutorial's example coordinates are written for.
-READY = {
-    'right_arm': [0.0, -0.5, 0.0, -1.57, 0.0, 0.0, 0.0],
-    'left_arm': [0.0, 0.5, 0.0, -1.57, 0.0, 0.0, 0.0],
-}
+def straight_parts(positions, ready, elbow):
+    """The parts of the ready pose `ready` (robot.ready_pose) that are straight.
+
+    An arm: its elbow (joint 3) within `elbow` rad of 0 -- the straight-arm singularity,
+    where hand-pose goals come back with the arm twisted. The torso: its knee (joint 2)
+    under half its ready angle. A part the driver does not report is left alone.
+    """
+    parts = []
+    for part, pose in ready.items():
+        joint = f'{part}_2' if part == 'torso' else f'{part}_3'
+        threshold = 0.5 * abs(pose[2]) if part == 'torso' else elbow
+        if joint in positions and abs(positions[joint]) < threshold:
+            parts.append(part)
+    return parts
 
 
-def straight_arms(positions, group_joints, threshold):
-    """Arms of the planning group whose elbow (joint 3) is within `threshold` of straight."""
-    return [arm for arm in READY
-            if f'{arm}_3' in group_joints and abs(positions[f'{arm}_3']) < threshold]
-
-
-def ready_goal(arms, minimum_time):
-    """A Rby1JointCommand moving only `arms` to READY; other parts are not commanded."""
+def ready_goal(ready, parts, minimum_time):
+    """A Rby1JointCommand moving only `parts` to their pose in `ready`; the rest is not commanded."""
     goal = Rby1JointCommand.Goal()
-    for arm in arms:
-        command = getattr(goal, arm)
-        command.position = list(READY[arm])
+    for part in parts:
+        command = getattr(goal, part)
+        command.position = [float(q) for q in ready[part]]
         command.minimum_time = minimum_time
     return goal
 

@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from rby1_cumotion.target_executor import TargetExecutor
-from rby1_cumotion.tracking import joint_rates, REST_SPEED, SERVO_GAIN, servo_step, TargetMotion
+from rby1_cumotion.executor.target_executor import arm_topics, TargetExecutor
+from rby1_cumotion.executor.tracking import joint_rates, REST_SPEED, SERVO_GAIN, servo_step, TargetMotion
 
 
 def at(x, y, z):
@@ -140,9 +140,16 @@ def test_smoothing_still_follows_a_steady_move_without_falling_behind():
     assert motion.position[0] == pytest.approx(0.1 * 89 / 30, abs=1e-4)
 
 
-def executor(busy=False, tracking=False):
-    return SimpleNamespace(busy=busy, tracking=tracking, tracking_cfg={'rate': 50.0},
-                           param=lambda name: '/rby1/target_pose')
+def executor(busy=False, tracking=False, reach=None):
+    return SimpleNamespace(busy=busy, tracking=tracking, tracking_cfg={'rate': 50.0}, reach=reach,
+                           param=lambda name: '/rby1/right_arm/target_pose')
+
+
+def test_targets_come_in_on_the_arms_own_topics():
+    assert arm_topics(['right_arm', 'torso']) == ('/rby1/right_arm/target_pose', '/rby1/right_arm/target_status')
+    assert arm_topics(['left_arm']) == ('/rby1/left_arm/target_pose', '/rby1/left_arm/target_status')
+    with pytest.raises(ValueError, match='exactly one'):
+        arm_topics(['torso'])
 
 
 def test_switching_to_tracking_waits_for_a_move_to_end():
@@ -157,6 +164,13 @@ def test_switching_modes():
     assert response.success and node.tracking and '50 Hz' in response.message
     response = TargetExecutor.on_set_tracking(node, SimpleNamespace(data=False), SimpleNamespace())
     assert response.success and not node.tracking
+
+
+def test_tracking_goes_with_a_torso_that_may_move():
+    """reach.use_torso: the torso follows too (reach.Follow), so the switch is not refused for it."""
+    node = executor(reach=object())
+    response = TargetExecutor.on_set_tracking(node, SimpleNamespace(data=True), SimpleNamespace())
+    assert response.success and node.tracking
 
 
 def run_servo(goal, steps, max_speed=2.0, max_acceleration=10.0, dt=0.02):

@@ -53,7 +53,7 @@ HEAD_MARGIN = 0.02  # m beyond the head's meshes, for what is mounted on it (a c
 # Modules attached to the hand (rby1_moveit_objects, attach: true) reach cuMotion as
 # spheres on this frame, fixed to the tool frame: the planner reserves sphere slots
 # for a link of this name and fills them through its UpdateLinkSpheres action
-# (attached.py). It must be in the XRDF's spheres for cuRobo to check it at all.
+# (executor/attached.py). It must be in the XRDF's spheres for cuRobo to check it at all.
 ATTACHED_LINK = 'attached_object'
 GROUP_DIRECTORY = 'groups'
 # The launch builds the bundle the nodes use here; see activate().
@@ -582,7 +582,7 @@ def trim_at_tool(root, spheres, tool, positions, margin=TOOL_MARGIN):
     could not come near anything. Spheres of that link reaching more than `margin`
     past the tool frame -- along the line from the link's origin to the tool -- are
     dropped; what is mounted on the tool is then given as attached modules
-    (attached.py), which can be left out part by part. Returns (None, None, 0) when
+    (executor/attached.py), which can be left out part by part. Returns (None, None, 0) when
     the tool's ancestors carry no spheres or the tool does not sit still on that link.
     """
     parent = {j.find('child').get('link'): j for j in root.findall('joint')}

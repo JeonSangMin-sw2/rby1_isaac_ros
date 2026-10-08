@@ -428,7 +428,7 @@ class PlanningClient(Node):
                 while time.monotonic() < deadline:
                     rclpy.spin_once(self, timeout_sec=0.1)
         raise TimeoutError(f'Planner never became ready. Last answer: {last}. Usually an obstacle '
-                           'touches the arm (ros2 run rby1_moveit_scene scene list / clear), or '
+                           'touches the arm (ros2 run rby1_moveit_objects scene list / clear), or '
                            "cuMotion is still starting (wait for 'cuMotion is ready for planning "
                            "queries' and start again).")
 

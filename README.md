@@ -119,7 +119,7 @@ source /workspaces/isaac_ros-dev/install/setup.bash
   👉 **[docs/tutorial_apriltag.md](docs/tutorial_apriltag.md)**
   * 카메라는 호스트에서(웹캠·RealSense·이미지 파일), 영상만 토픽으로 컨테이너에 → GPU 보정·검출(cuAprilTag)
   * **`rby1_apriltag`**(C++): 대상 마커 선별, 중앙값+SVD 안정화, 표준 `PoseStamped`·TF 발행
-  * 마커 좌표로 로봇 움직이기(드라이버 저장소 `rby1_examples`): `22_marker_tracking`(손·머리가 마커를 따라감), `23_marker_shuttle`(두 마커 사이 왕복, 장애물 회피)
+  * 마커 좌표로 로봇 움직이기: `follow_head:=true`(머리가 마커를 따라감), `marker_target.launch.py`(마커를 팔 목표로 → 손이 마커로 감)
 
 * 🧭 **[Visual SLAM (cuVSLAM 3D 오도메트리)](docs/tutorial_visual_slam.md)** *(작성 예정)*:
   * 스테레오 카메라 및 IMU 융합 GPU 가속 실시간 6-DoF 로봇 위치 추정
@@ -143,7 +143,7 @@ colcon build --base-paths src/rby1_isaac_ros/rby1_cumotion \
 ros2 launch rby1_driver rby1_ros2_driver.launch.py                            # 호스트: 드라이버
 ros2 run rby1_examples 06_zero_pose                                           # 호스트: 전원·서보 + 영점
 ros2 launch rby1_cumotion demo.launch.py                                      # 컨테이너: 준비 → cuMotion → 실행기 (RViz)
-ros2 run rby1_examples 15_moveit_move_hand                                    # 호스트: 예제 (튜토리얼 §4 표)
+ros2 run rby1_examples 16_target_shuttle_publisher --ros-args -p cycles:=1    # 호스트: 예제 — 목표 두 개 발행, 실행기의 답 출력 (튜토리얼 §4)
 ```
 > 컨테이너 터미널은 `isaac-ros`(= `docker exec -u admin`)로 엽니다. `root@…` 셸에서는 드라이버 토픽이 오지 않습니다.
 > cuMotion 런치가 떠 있으면 목표를 받을 때 **로봇이 움직입니다.** 속도·그룹 등 설정은 `rby1_cumotion/config/cumotion.yaml` 한 곳. 문제가 생기면 그 터미널의 메시지가 할 일을 알려 줍니다(자세히: [developer_manual 트러블슈팅](docs/developer_manual.md#12-트러블슈팅)).
@@ -159,13 +159,12 @@ colcon build --symlink-install --base-paths src/rby1_isaac_ros/rby1_apriltag --p
 
 # 실행 (매번)
 ros2 launch rby1_additional_tools camera.launch.py                            # 호스트: 카메라 → /camera/image_raw
-ros2 launch rby1_apriltag apriltag.launch.py                                  # 컨테이너: 보정 → 검출 → /target_marker/pose
-ros2 topic echo /target_marker/pose --once                                    # 호스트: 확인
-ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head          # 호스트: 머리가 마커를 따라감 (드라이버 필요)
-ros2 run rby1_examples 22_marker_tracking                                     # 호스트: 손이 마커를 따라감 (cuMotion 기동 필요, 추적 모드를 스스로 켬)
-ros2 run rby1_examples 23_marker_shuttle                                      # 호스트: 두 마커(ids:=7,12) 아래 지점 사이 왕복
+ros2 launch rby1_apriltag apriltag.launch.py                                  # 컨테이너: 보정 → 검출 → /rby1/marker/pose
+ros2 topic echo /rby1/marker/pose --once                                      # 호스트: 확인
+ros2 launch rby1_apriltag apriltag.launch.py follow_head:=true                # 컨테이너: 검출 + 머리가 마커를 따라감 (드라이버 필요)
+ros2 launch rby1_apriltag marker_target.launch.py ids:=7,8                    # 컨테이너: 검출 + 마커를 팔 목표로 → 손이 마커로 감 (cuMotion 기동 필요)
 ```
-> 마커 크기(`size`, 검은 사각형 한 변 m)와 찾을 번호(`target_ids`)는 `rby1_apriltag/config/target_tags.yaml` — 이번 실행만 바꾸려면 `size:=0.08 ids:=7,12`. 마커 예제는 [docs/tutorial_cumotion.md 4.7](docs/tutorial_cumotion.md). 자세히: [docs/tutorial_apriltag.md](docs/tutorial_apriltag.md).
+> 마커 크기(`size`, 검은 사각형 한 변 m)와 찾을 번호(`target_ids`)는 `rby1_apriltag/config/target_tags.yaml` — 이번 실행만 바꾸려면 `size:=0.08 ids:=7,8`. 마커로 손을 움직이는 순서는 [docs/tutorial_cumotion.md 4.7](docs/tutorial_cumotion.md). 자세히: [docs/tutorial_apriltag.md](docs/tutorial_apriltag.md).
 
 
 ---

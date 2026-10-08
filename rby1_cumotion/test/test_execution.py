@@ -1,13 +1,14 @@
 """Retiming, target validation, driver-facing helpers, and the launch modes."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from builtin_interfaces.msg import Duration
 import numpy as np
 import pytest
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from rby1_cumotion.execution import MAX_STEP, retime, seconds
+from rby1_cumotion.executor.execution import MAX_STEP, retime, seconds
 from rby1_cumotion.planning import check_transform
 
 PACKAGE = Path(__file__).resolve().parent.parent
@@ -64,8 +65,7 @@ def test_load_reports_how_close_to_the_velocity_limit(plan):
 
 
 @pytest.mark.parametrize('step', [0.0, MAX_STEP + 0.01, 1.5])
-def test_steps_must_stay_well_inside_the_driver_stream_timeout(plan, step):
-    """The driver drops the stream after 1 s without a command."""
+def test_steps_must_stay_short(plan, step):
     with pytest.raises(ValueError, match='step'):
         retime(plan, 4.0, step, LIMITS)
     assert MAX_STEP < 1.0
@@ -123,7 +123,7 @@ def test_malformed_targets_are_rejected(bad, message):
 
 def test_executor_refuses_a_bundle_for_the_other_robot_kind():
     pytest.importorskip('rby1_msgs', reason='rby1_msgs is baked into the image; run in the container')
-    from rby1_cumotion.driver import check_driver_model
+    from rby1_cumotion.bringup.driver import check_driver_model
     check_driver_model('m', 'm_1_2')
     check_driver_model('M', 'm_1_3')
     with pytest.raises(ValueError, match='started for a_1_2'):
@@ -133,7 +133,7 @@ def test_executor_refuses_a_bundle_for_the_other_robot_kind():
 def test_executor_refuses_to_move_under_estop_or_major_fault():
     pytest.importorskip('rby1_msgs', reason='rby1_msgs is baked into the image; run in the container')
     from rby1_msgs.msg import RobotState
-    from rby1_cumotion.driver import robot_problem
+    from rby1_cumotion.bringup.driver import robot_problem
     assert robot_problem(RobotState(control_manager_state=RobotState.STATE_ENABLE)) is None
     assert robot_problem(RobotState(control_manager_state=RobotState.STATE_IDLE)) is None
     assert 'Emergency stop' in robot_problem(RobotState(emo_state=True))
@@ -142,7 +142,7 @@ def test_executor_refuses_to_move_under_estop_or_major_fault():
 
 def test_launch_never_loads_the_driver_hardware_plugin():
     """rby1_hardware is not in the container, and would lock out the driver's action."""
-    source = (PACKAGE / 'rby1_cumotion' / 'bringup.py').read_text()
+    source = (PACKAGE / 'rby1_cumotion' / 'bringup' / 'description.py').read_text()
     code = source.split('"""', 2)[2]  # the module docstring may explain why
     assert 'rby1_hardware' not in code
     assert 'mock_components/GenericSystem' in code
@@ -158,7 +158,7 @@ def test_hold_repeats_the_final_pose_at_rest_after_the_motion(plan):
     """The driver reports done once the last waypoint is *sent*; switching the
     stream off then cut fast moves 0.03-0.055 rad short. The hold keeps the
     final target streaming while the arm settles, inside the 1 s stream timeout."""
-    from rby1_cumotion.execution import DEFAULT_HOLD, with_hold
+    from rby1_cumotion.executor.execution import DEFAULT_HOLD, with_hold
     moved, _ = retime(plan, 2.0, 0.05, LIMITS)
     held = with_hold(moved, DEFAULT_HOLD, 0.05)
     tail = held.points[len(moved.points):]
@@ -174,7 +174,7 @@ def test_hold_repeats_the_final_pose_at_rest_after_the_motion(plan):
 
 
 def test_zero_hold_sends_the_motion_unchanged(plan):
-    from rby1_cumotion.execution import with_hold
+    from rby1_cumotion.executor.execution import with_hold
     moved, _ = retime(plan, 2.0, 0.05, LIMITS)
     assert with_hold(moved, 0.0, 0.05) is moved
     with pytest.raises(ValueError, match='hold'):
@@ -186,14 +186,14 @@ def test_zero_hold_sends_the_motion_unchanged(plan):
 ])
 def test_driver_report_maps_to_a_bundle_name(kind, version, name):
     pytest.importorskip('rby1_msgs', reason='rby1_msgs is baked into the image; run in the container')
-    from rby1_cumotion.driver import bundle_name
+    from rby1_cumotion.bringup.driver import bundle_name
     assert bundle_name(kind, version) == name
 
 
 def test_an_unpatched_driver_version_is_explained():
     """Drivers before the fix publish 0.0: the SDK says "v1.2" and stod fails."""
     pytest.importorskip('rby1_msgs', reason='rby1_msgs is baked into the image; run in the container')
-    from rby1_cumotion.driver import bundle_name
+    from rby1_cumotion.bringup.driver import bundle_name
     with pytest.raises(ValueError, match='model:=m_1_2'):
         bundle_name('m', 0.0)
     with pytest.raises(ValueError, match='expected m or a'):
@@ -205,11 +205,11 @@ def test_executor_is_the_only_node_that_moves_the_robot():
     other posture moves are rby1_examples' job (06_zero_pose, 07_joint_command)."""
     for gone in ('prepare_robot.py', 'move_arm.py'):
         assert not (PACKAGE / 'rby1_cumotion' / gone).exists()
-    movers = [path.name for path in (PACKAGE / 'rby1_cumotion').glob('*.py')
+    movers = [path.name for path in (PACKAGE / 'rby1_cumotion').rglob('*.py')
               if 'DriverExecutor(' in path.read_text()]
     assert movers == ['target_executor.py']
     # The only other motion: prepare bends a straight arm, before the planner starts.
-    posers = sorted(path.name for path in (PACKAGE / 'rby1_cumotion').glob('*.py')
+    posers = sorted(path.name for path in (PACKAGE / 'rby1_cumotion').rglob('*.py')
                     if 'ready_goal(' in path.read_text() and path.name != 'driver.py')
     assert posers == ['prepare.py']
 
@@ -217,10 +217,10 @@ def test_executor_is_the_only_node_that_moves_the_robot():
 def test_prepare_reads_model_and_posture_from_the_driver_before_the_stack_starts():
     """move_group and the planner load the model at start, so the bundle and the
     locked posture must be settled first -- and every arm move done before that."""
-    code = (PACKAGE / 'rby1_cumotion' / 'prepare.py').read_text().split('"""', 2)[2]
-    assert 'read_robot(' in code and 'activate(' in code and 'straight_arms(' in code
+    code = (PACKAGE / 'rby1_cumotion' / 'bringup' / 'prepare.py').read_text().split('"""', 2)[2]
+    assert 'read_robot(' in code and 'activate(' in code and 'straight_parts(' in code
     assert code.index('preparer.ready(') < code.index('activate(source, group, positions=positions')
-    bringup = (PACKAGE / 'rby1_cumotion' / 'bringup.py').read_text()
+    bringup = (PACKAGE / 'rby1_cumotion' / 'bringup' / 'description.py').read_text()
     assert "executable='prepare'" in bringup
     assert 'OnProcessExit(target_action=prepare, on_exit=after_prepare)' in bringup
     assert "executable='target_executor'" in bringup
@@ -228,27 +228,44 @@ def test_prepare_reads_model_and_posture_from_the_driver_before_the_stack_starts
         assert 'launch_description(rviz_default=' in (PACKAGE / 'launch' / name).read_text()
 
 
-def test_prepare_readies_only_straight_group_arms():
-    """A straight arm is singular for hand-pose goals (arm rolls come back twisted).
-    Only the group's own arm moves: the other arm stays where the user put it."""
+def test_prepare_readies_every_straight_part():
+    """A straight arm is singular for hand-pose goals (arm rolls come back twisted), and
+    a straight torso for a planner that moves it. Both arms and the torso are taken to
+    the ready pose of the settings file, whichever group plans; a bent part stays."""
     pytest.importorskip('rby1_msgs', reason='rby1_msgs is baked into the image; run in the container')
-    from rby1_cumotion.driver import ready_goal, READY, straight_arms
-    right = [f'right_arm_{i}' for i in range(7)]
-    zero = {f'{arm}_{i}': 0.0 for arm in ('right_arm', 'left_arm') for i in range(7)}
-    assert straight_arms(zero, right, 0.3) == ['right_arm']          # left arm is locked, not ours
-    bent = dict(zero, right_arm_3=-1.57)
-    assert straight_arms(bent, right, 0.3) == []
-    both = right + [f'left_arm_{i}' for i in range(7)]
-    assert straight_arms(zero, both, 0.3) == ['right_arm', 'left_arm']
-    goal = ready_goal(['right_arm'], 4.0)
-    assert list(goal.right_arm.position) == READY['right_arm'] and goal.right_arm.minimum_time == 4.0
-    assert list(goal.left_arm.position) == [] and list(goal.torso.position) == []
+    from rby1_cumotion import settings
+    from rby1_cumotion.bringup.driver import ready_goal, straight_parts
+    ready = settings.load(None, 'robot')['ready_pose']
+    zero = {f'{part}_{i}': 0.0 for part, count in settings.PARTS.items() for i in range(count)}
+    assert straight_parts(zero, ready, 0.3) == ['right_arm', 'left_arm', 'torso']
+    assert straight_parts(dict(zero, right_arm_3=-1.57), ready, 0.3) == ['left_arm', 'torso']
+    assert straight_parts(dict(zero, torso_2=-0.2), ready, 0.3) == ['right_arm', 'left_arm']
+    assert straight_parts({'left_arm_3': 0.0}, ready, 0.3) == ['left_arm']  # what the driver does not report stays
+    assert straight_parts(zero, dict(ready, torso=[0.0] * 6), 0.3) == ['right_arm', 'left_arm']  # a flat ready torso
+    goal = ready_goal(ready, ['right_arm', 'torso'], 4.0)
+    assert list(goal.right_arm.position) == ready['right_arm'] and goal.right_arm.minimum_time == 4.0
+    assert list(goal.torso.position) == ready['torso'] and goal.torso.minimum_time == 4.0
+    assert list(goal.left_arm.position) == []
+
+
+def test_ready_pose_is_checked_when_the_settings_load(tmp_path):
+    import yaml
+    from rby1_cumotion import settings
+    data = yaml.safe_load(settings.default_path().read_text())
+    for change, message in (({'torso': [0.0] * 5}, 'ready_pose.torso needs 6'),
+                            ({'head': [0.0, 0.0]}, "unknown parts \\['head'\\]"),
+                            ({'left_arm': None}, 'ready_pose.left_arm needs 7')):
+        broken = dict(data, robot=dict(data['robot'], ready_pose={**data['robot']['ready_pose'], **change}))
+        path = tmp_path / 'cumotion.yaml'
+        path.write_text(yaml.safe_dump(broken))
+        with pytest.raises(ValueError, match=message):
+            settings.load(path, 'robot')
 
 
 @pytest.fixture
 def arm():
     """The m_1_2 right arm from the shipped bundle: real kinematics and limits."""
-    from rby1_cumotion.execution import ToolChain
+    from rby1_cumotion.executor.execution import ToolChain
     from rby1_cumotion.model import load_model
     bundle = PACKAGE.parent / 'docker' / 'bundles' / 'm_1_2'
     if not (bundle / 'model.json').is_file():
@@ -281,7 +298,7 @@ def test_tool_chain_matches_the_full_model(arm):
 
 
 def test_short_moves_take_the_minimum_time(arm):
-    from rby1_cumotion.execution import motion_duration
+    from rby1_cumotion.executor.execution import motion_duration
     metadata, chain, fixed = arm
     start = [0.0, -0.5, 0.0, -1.57, 0.0, 0.0, 0.0]
     end = [0.05, -0.5, 0.0, -1.5, 0.0, 0.0, 0.0]
@@ -292,7 +309,7 @@ def test_short_moves_take_the_minimum_time(arm):
 
 def test_a_long_move_is_timed_by_the_tool_speed_and_respects_it(arm):
     """The retimed path must peak at (not above) the linear limit when that limit decides."""
-    from rby1_cumotion.execution import motion_duration
+    from rby1_cumotion.executor.execution import motion_duration
     metadata, chain, fixed = arm
     start = [0.0, -0.5, 0.0, -1.57, 0.0, 0.0, 0.0]
     end = [0.6, -0.9, 0.3, -0.4, 0.2, 0.3, 0.0]
@@ -306,7 +323,7 @@ def test_a_long_move_is_timed_by_the_tool_speed_and_respects_it(arm):
 
 
 def test_the_joint_limits_can_decide_and_the_result_passes_retime(arm):
-    from rby1_cumotion.execution import motion_duration
+    from rby1_cumotion.executor.execution import motion_duration
     metadata, chain, fixed = arm
     start = [0.0, -0.5, 0.0, -1.57, 0.0, 0.0, 0.0]
     end = [0.0, -0.5, 0.0, -1.57, 0.0, 0.0, 2.5]   # wrist roll only: tool barely moves
@@ -318,7 +335,7 @@ def test_the_joint_limits_can_decide_and_the_result_passes_retime(arm):
 
 
 def test_choose_source_insists_on_the_connected_robot(tmp_path):
-    from rby1_cumotion.prepare import choose_source
+    from rby1_cumotion.bringup.prepare import choose_source
     bundle = tmp_path / 'm_1_2'
     bundle.mkdir()
     (bundle / 'model.json').write_text('{"model": "m_1_2"}')
@@ -333,7 +350,7 @@ def test_choose_source_insists_on_the_connected_robot(tmp_path):
 
 
 def test_prepare_refuses_to_start_next_to_another_cumotion_launch(tmp_path):
-    from rby1_cumotion.prepare import check_alone
+    from rby1_cumotion.bringup.prepare import check_alone
     (tmp_path / '42').mkdir()
     (tmp_path / '42' / 'cmdline').write_bytes(b'/usr/bin/python3\0/opt/ros/humble/lib/x/cumotion_planner_node\0')
     with pytest.raises(RuntimeError, match='Another cuMotion launch'):
@@ -350,7 +367,7 @@ IMPEDANCE = {'enabled': True, 'stiffness': 80.0, 'damping_ratio': 0.8, 'torque_l
 
 
 def test_impedance_covers_exactly_the_group_parts():
-    from rby1_cumotion.execution import impedance_request
+    from rby1_cumotion.executor.execution import impedance_request
     group = [f'right_arm_{i}' for i in range(7)] + [f'torso_{i}' for i in range(6)]
     request = impedance_request(IMPEDANCE, group, ROBOT_JOINTS)
     assert list(request.state) == [True, True, False]  # torso, right_arm, left_arm
@@ -361,7 +378,7 @@ def test_impedance_covers_exactly_the_group_parts():
 
 
 def test_impedance_off_asks_for_position_everywhere():
-    from rby1_cumotion.execution import impedance_request
+    from rby1_cumotion.executor.execution import impedance_request
     request = impedance_request({**IMPEDANCE, 'enabled': False}, [f'left_arm_{i}' for i in range(7)],
                                 ROBOT_JOINTS)
     assert list(request.state) == [False, False, False]
@@ -369,14 +386,24 @@ def test_impedance_off_asks_for_position_everywhere():
 
 
 class _FakeDriver:
-    def __init__(self):
+    def __init__(self, open_already=()):
         self.calls = []
+        self.open = set(open_already)  # stream channels
 
     def call(self, service, kind, request):
         self.calls.append((service, list(request.state)))
 
     def switch(self, service, state, parameters='all'):
-        self.calls.append((service, state))
+        """stream_control as the driver answers it: which channels it opened."""
+        self.calls.append((service, state, parameters))
+        channels = set(parameters.split(','))
+        if not state:
+            self.open -= channels
+            return SimpleNamespace(message='Stream channels closed: ' + parameters + '.')
+        opened = channels - self.open
+        self.open |= channels
+        return SimpleNamespace(message=('Stream channels opened: ' + ', '.join(sorted(opened)) + '.') if opened
+                               else 'Stream channels already open: ' + parameters + '.')
 
 
 class _FakeNode:
@@ -385,36 +412,50 @@ class _FakeNode:
         return logging.getLogger('test')
 
 
-def _runner(stream_on, enabled):
-    from rby1_cumotion.execution import DriverExecutor, impedance_request
+def _runner(open_already, enabled, channels=('arm',)):
+    from rby1_cumotion.executor.execution import DriverExecutor, impedance_request
     runner = DriverExecutor.__new__(DriverExecutor)
-    runner.node, runner.driver = _FakeNode(), _FakeDriver()
+    runner.node, runner.driver = _FakeNode(), _FakeDriver(open_already)
     runner.goal_handle, runner.stream_closed, runner.client = None, 0.0, object()
-    runner.applied_impedance, runner.owns_stream = None, False
-    runner.stream_is_on = lambda: stream_on
+    runner.applied_impedance, runner.owned, runner.channels = None, [], channels
     runner.impedance = lambda: impedance_request({**IMPEDANCE, 'enabled': enabled[0]},
                                                  [f'right_arm_{i}' for i in range(7)], ROBOT_JOINTS)
     runner.send = lambda trajectory: None
     return runner
 
 
-def test_a_stream_someone_else_opened_stays_on():
-    runner = _runner(stream_on=True, enabled=[False])
+def test_a_stream_channel_someone_else_opened_stays_open():
+    runner = _runner(open_already=['arm', 'head'], enabled=[False])
     runner.begin(None)
     runner.stop()
-    assert ('stream_control', False) not in runner.driver.calls
+    assert not [call for call in runner.driver.calls if call[:2] == ('stream_control', False)]
+    assert runner.driver.open == {'arm', 'head'}
 
 
-def test_the_stream_this_executor_opened_is_closed():
-    runner = _runner(stream_on=False, enabled=[False])
+def test_the_stream_channel_this_executor_opened_is_closed():
+    runner = _runner(open_already=['head'], enabled=[False])
+    runner.begin(None)
+    assert runner.driver.calls[-1] == ('stream_control', True, 'arm')  # only its own channel
+    runner.stop()
+    assert runner.driver.calls[-1] == ('stream_control', False, 'arm')
+    assert runner.driver.open == {'head'}  # a head tracker's channel is left alone
+
+
+def test_a_torso_group_opens_the_torso_channel_too_and_closes_what_it_opened():
+    from rby1_cumotion.executor.execution import stream_channels
+    joints = [f'torso_{i}' for i in range(6)] + [f'right_arm_{i}' for i in range(7)]
+    assert stream_channels(joints) == ('arm', 'torso')
+    assert stream_channels(joints[6:]) == ('arm',)
+    runner = _runner(open_already=['arm'], enabled=[False], channels=stream_channels(joints))
     runner.begin(None)
     runner.stop()
-    assert runner.driver.calls[-1] == ('stream_control', False)
+    assert runner.driver.calls[-1] == ('stream_control', False, 'torso')
+    assert runner.driver.open == {'arm'}
 
 
 def test_impedance_is_sent_when_it_changes_and_not_while_never_enabled():
     enabled = [False]
-    runner = _runner(stream_on=False, enabled=enabled)
+    runner = _runner(open_already=[], enabled=enabled)
     runner.apply_impedance()
     assert runner.driver.calls == []  # never enabled: the driver's own setting stands
     enabled[0] = True
