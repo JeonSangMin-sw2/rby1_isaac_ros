@@ -98,6 +98,7 @@ def test_default_posture_has_no_enabled_sphere_collisions(prepared, group):
     xrdf = yaml.safe_load(Path(metadata['xrdf_path']).read_text())
     spheres, ignore = xrdf['geometry']['robot']['spheres'], xrdf['self_collision']['ignore']
     frames = forward_kinematics(root, metadata['default_positions'], None)
+    frames['attached_object'] = frames[metadata['tool_frame']]  # an XRDF frame on the tool
     for a, b in itertools.combinations(spheres, 2):
         if b in ignore[a] or a in ignore[b]:
             continue
@@ -314,3 +315,156 @@ def test_canonicalization_preserves_every_link_pose():
         after = forward_kinematics(rewritten, {'j': q}, None)
         for link in before:
             np.testing.assert_allclose(after[link], before[link], atol=1e-12)
+
+
+def test_runtime_bundle_locks_the_other_joints_at_the_measured_posture(prepared, tmp_path):
+    """The planner can start from any posture: only the 74 KB group is rebuilt."""
+    from rby1_cumotion.model import activate, active_record
+    source_meta, _ = load_model(prepared, 'right_arm')
+    zero = {name: 0.0 for name in source_meta['default_positions']}
+    zero['wheel_fl'] = 3.0  # the driver reports joints the model does not plan with
+    out = activate(prepared, 'right_arm', tmp_path / 'active', positions=zero,
+                   extra={'hardware': 'driver'})
+    metadata, _ = load_model(out)  # one group, so no name needed
+    assert metadata['group'] == 'right_arm'
+    assert all(value == 0.0 for value in metadata['locked_joints'].values())
+    assert metadata['default_positions'] == {k: 0.0 for k in source_meta['default_positions']}
+    xrdf = yaml.safe_load(Path(metadata['xrdf_path']).read_text())
+    assert xrdf['default_joint_positions']['left_arm_1'] == 0.0
+    # Heavy artifacts are shared, not copied.
+    assert (out / 'robot.urdf').is_symlink() and (out / MESH_DIRECTORY).is_symlink()
+    assert not (out / 'groups').is_symlink()
+    record = active_record(out)
+    assert record['posture'] == 'measured' and record['hardware'] == 'driver'
+    assert Path(record['source']) == Path(prepared).resolve()
+
+
+def test_runtime_bundle_accepts_either_group_spelling(prepared, tmp_path):
+    from rby1_cumotion.model import activate
+    out = activate(prepared, 'right_arm_torso', tmp_path / 'a')
+    assert load_model(out)[0]['srdf_groups'] == ['right_arm', 'torso']
+    out = activate(prepared, 'right_arm+torso', tmp_path / 'b')
+    assert load_model(out)[0]['group'] == 'right_arm_torso'
+
+
+def test_runtime_bundle_without_a_posture_keeps_the_bundle_one(prepared, tmp_path):
+    from rby1_cumotion.model import activate, active_record
+    out = activate(prepared, 'left_arm', tmp_path / 'active')
+    source_meta, _ = load_model(prepared, 'left_arm')
+    assert load_model(out)[0]['locked_joints'] == source_meta['locked_joints']
+    assert active_record(out)['posture'] == 'bundle'
+
+
+def test_runtime_bundle_refuses_a_bad_posture(prepared, tmp_path):
+    from rby1_cumotion.model import activate
+    meta, _ = load_model(prepared, 'right_arm')
+    partial = {name: 0.0 for name in list(meta['default_positions'])[1:]}
+    with pytest.raises(ValueError, match='missing joints'):
+        activate(prepared, 'right_arm', tmp_path / 'a', positions=partial)
+    nan = {name: 0.0 for name in meta['default_positions']}
+    nan['torso_0'] = float('nan')
+    with pytest.raises(ValueError, match='non-finite'):
+        activate(prepared, 'right_arm', tmp_path / 'b', positions=nan)
+
+
+def test_runtime_bundle_is_never_built_over_its_source(prepared):
+    from rby1_cumotion.model import activate
+    with pytest.raises(ValueError, match='in place'):
+        activate(prepared, 'right_arm', prepared)
+
+
+def test_examples_without_a_bundle_say_what_to_do(tmp_path, monkeypatch):
+    from rby1_cumotion import model
+    monkeypatch.setattr(model, 'ACTIVE_BUNDLE', tmp_path / 'nothing')
+    with pytest.raises(ValueError, match='Start cumotion.launch.py or demo.launch.py first'):
+        model.resolve_bundle('')
+    assert model.resolve_bundle('/some/bundle') == Path('/some/bundle')
+
+
+def test_head_envelope_holds_the_head_in_every_pose(prepared, group):
+    """One sphere on the fixed neck, centred where the head axes cross, reaches every
+    vertex of the turning head in any pose -- so the head is left out of the posture check."""
+    from rby1_cumotion.model import head_envelope, HEAD_JOINTS, mesh_vertices
+    metadata, root = load_model(prepared, group)
+    link, sphere = head_envelope(root, prepared)
+    xrdf = yaml.safe_load(Path(metadata['xrdf_path']).read_text())
+    assert sphere in xrdf['geometry']['robot']['spheres'][link]
+    assert metadata['unwatched_joints'] == list(HEAD_JOINTS)
+    assert set(HEAD_JOINTS) <= set(metadata['locked_joints'])  # still locked for cuRobo
+    turning = {joint.find('child').get('link') for joint in root.findall('joint')
+               if joint.get('name') in HEAD_JOINTS}
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        positions = dict(metadata['default_positions'])
+        positions.update({name: float(rng.uniform(-1.57, 1.57)) for name in HEAD_JOINTS})
+        frames = forward_kinematics(root, positions, None)
+        centre = frames[link][:3, :3] @ np.array(sphere['center']) + frames[link][:3, 3]
+        for element in root.findall('link'):
+            if element.get('name') not in turning:
+                continue
+            for mesh in element.findall('collision/geometry/mesh'):
+                vertices = mesh_vertices(Path(mesh.get('filename')))
+                at = frames[element.get('name')]
+                points = vertices @ at[:3, :3].T + at[:3, 3]
+                assert np.linalg.norm(points - centre, axis=1).max() <= sphere['radius']
+
+
+def test_the_head_is_not_held_to_the_launch_posture(prepared):
+    from rby1_cumotion.planning import check_locked, PostureMismatch
+    metadata, _ = load_model(prepared, 'right_arm')
+    positions = dict(metadata['default_positions'])
+    positions['head_0'] = 1.0  # a head tracker turned it
+    check_locked(metadata, positions, 0.01)
+    positions['left_arm_1'] += 0.1
+    with pytest.raises(PostureMismatch):
+        check_locked(metadata, positions, 0.01)
+
+
+def test_attached_object_frame_rides_on_the_tool(prepared, group):
+    """Modules on the hand reach cuMotion as spheres on this frame (attached.py)."""
+    from rby1_cumotion.model import ATTACHED_LINK
+    metadata, _ = load_model(prepared, group)
+    xrdf = yaml.safe_load(Path(metadata['xrdf_path']).read_text())
+    frame = xrdf['modifiers'][0]['add_frame']
+    assert frame['frame_name'] == ATTACHED_LINK and frame['parent_frame_name'] == metadata['tool_frame']
+    assert ATTACHED_LINK in xrdf['geometry']['robot']['spheres']  # else cuRobo never checks it
+    wrist = xrdf['self_collision']['ignore'][ATTACHED_LINK]
+    arm = metadata['tool_frame'].split('_')[1]  # ee_right -> right
+    assert f'link_{arm}_arm_5' in wrist and f'link_{arm}_arm_0' not in wrist
+
+
+def test_the_planning_arm_ends_at_its_tool_frame(prepared, group):
+    """The SDK's wrist capsule also wraps the gripper; cuMotion's body stops at the tool frame."""
+    from rby1_cumotion.model import forward_kinematics, TOOL_MARGIN
+    metadata, root = load_model(prepared, group)
+    tool = metadata['tool_frame']
+    arm = tool.split('_')[1]
+    wrist, other = f'link_{arm}_arm_5', f'link_{"left" if arm == "right" else "right"}_arm_5'
+    if metadata['model'] == 'm_1_3':
+        # Its last wrist joint swings the tool about the capsule's link: no fixed place to
+        # end the body, so the SDK's envelope stays.
+        assert not metadata['body_ends_at_tool'] and metadata['trimmed_spheres'] == {}
+        return
+    assert metadata['body_ends_at_tool'] and metadata['trimmed_spheres'][wrist] > 0
+    xrdf = yaml.safe_load(Path(metadata['xrdf_path']).read_text())['geometry']['robot']['spheres']
+    whole = yaml.safe_load((Path(prepared) / 'spheres.yaml').read_text())
+    frames = forward_kinematics(root, metadata['default_positions'], None)
+    here = (np.linalg.inv(frames[wrist]) @ frames[tool])[:3, 3]
+    toward = here / np.linalg.norm(here)
+
+    def beyond(spheres):  # how far past the tool frame the farthest sphere reaches
+        return max((np.array(s['center']) - here) @ toward + s['radius'] for s in spheres if s['radius'] > 0)
+    assert beyond(whole[wrist]) > 0.05                      # the SDK's envelope: well past the tool frame
+    assert beyond(xrdf[wrist]) <= TOOL_MARGIN + 1e-9        # the body: ends there
+    assert sum(s['radius'] > 0 for s in xrdf[wrist]) >= 3   # and the wrist itself is still covered
+    assert len(xrdf[other]) == len(whole[other])            # the other arm keeps its envelope, hand included
+
+
+def test_the_sdk_envelope_can_be_kept(prepared, tmp_path):
+    from rby1_cumotion.model import activate
+    out = activate(prepared, 'right_arm', tmp_path / 'whole', body_ends_at_tool=False)
+    metadata, _ = load_model(out)
+    xrdf = yaml.safe_load(Path(metadata['xrdf_path']).read_text())['geometry']['robot']['spheres']
+    whole = yaml.safe_load((Path(prepared) / 'spheres.yaml').read_text())
+    assert not metadata['body_ends_at_tool'] and metadata['trimmed_spheres'] == {}
+    assert len(xrdf['link_right_arm_5']) == len(whole['link_right_arm_5'])

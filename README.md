@@ -22,24 +22,21 @@ Rainbow Robotics의 로봇 플랫폼(RBY1 등)에서 NVIDIA Isaac ROS의 하드�
 호스트 설정이 완료되었다면 아래 단계에 따라 필요한 패키지를 구성하고 빌드합니다.
 
 ### Step 1. 필요한 Isaac ROS 패키지 클론 (`src/` 경로)
-모든 공식 패키지는 NITROS ABI 호환성을 위해 반드시 **동일한 릴리즈 브랜치**로 통일하여 클론합니다.
 
 #### 🔹 Ubuntu 22.04 LTS 호스트 (ROS 2 Humble / release-3.2)
+소스로 받는 것은 **도커 개발 래퍼 `isaac_ros_common` 하나**입니다. cuMotion, AprilTag(`isaac_ros_apriltag`), 영상 보정
+(`isaac_ros_image_proc`)은 NVIDIA apt 패키지로 이 저장소의 이미지 레이어(`docker/Dockerfile.cumotion`)에 들어갑니다.
+
 ```bash
 cd ~/isaac_ros_ws/src
-
-# 1. 도커 개발 래퍼 (환경 구성 단계에서 클론하지 않은 경우)
-git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
-
-# 2. 비전 및 AprilTag 패키지
-git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag.git
-git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git
-
-# [Visual SLAM 필요 시]
-# git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
+git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git   # 환경 구성 단계에서 클론하지 않은 경우
 ```
 
+> 예전 방식대로 `isaac_ros_apriltag`, `isaac_ros_image_pipeline`을 `src/`에 클론해 빌드했다면, 그 빌드 결과(`install/`)가
+> apt 설치본보다 우선합니다. 지우거나 `install/`에서 빼 두십시오(소스 폴더는 남아 있어도 `rby1_isaac_ros`만 빌드하면 상관없음).
+
 #### 🔹 Ubuntu 24.04 LTS 호스트 (ROS 2 Jazzy / release-4.0 이상)
+> ⚠️ 이 저장소의 이미지 레이어는 Humble(release-3.2) 기준입니다. 아래 Jazzy 절차는 확인하지 않았습니다.
 ```bash
 cd ~/isaac_ros_ws/src
 
@@ -82,12 +79,11 @@ sudo apt update
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 
-# 2. 센서 드라이버 설치 (RealSense 사용 시)
-# Ubuntu 22.04 (Humble):
-sudo apt install -y ros-humble-realsense2-camera ros-humble-isaac-ros-realsense
-# Ubuntu 24.04 (Jazzy):
-# sudo apt install -y ros-jazzy-realsense2-camera
 ```
+
+> 카메라는 컨테이너가 아니라 **호스트에서** 켭니다. 영상은 토픽(`/camera/image_raw`, `/camera/camera_info`)으로 컨테이너에
+> 넘어옵니다 — 드라이버 저장소의 `rby1_additional_tools`(`camera.launch.py`: 웹캠·파일·RealSense). RealSense를 쓰면
+> 호스트에 `sudo apt install ros-humble-librealsense2`(realsense-ros는 필요 없음).
 
 ---
 
@@ -96,11 +92,8 @@ sudo apt install -y ros-humble-realsense2-camera ros-humble-isaac-ros-realsense
 
 ```bash
 # 컨테이너 내부에서 실행
-# 1. AprilTag 패키지 및 관련 의존 노드 빌드 (테스트 빌드 제외)
-colcon build --symlink-install --packages-up-to isaac_ros_apriltag --cmake-args -DBUILD_TESTING=OFF
-
-# (참고: 워크스페이스 내 모든 패키지 전체 빌드 시)
-# colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF
+# 1. 이 저장소의 패키지만 빌드 (NVIDIA 패키지는 이미지에 apt로 들어 있음)
+colcon build --base-paths src/rby1_isaac_ros --symlink-install --cmake-args -DBUILD_TESTING=OFF
 
 # 2. 빌드 환경 반영 (오버레이 적용)
 source /opt/ros/humble/setup.bash             # Jazzy의 경우 /opt/ros/jazzy/setup.bash
@@ -115,18 +108,18 @@ source /workspaces/isaac_ros-dev/install/setup.bash
 
 ### 📌 패키지 매뉴얼 목록
 
-* **[cuMotion 기반 RBY1 팔 경로 계획 및 실행](docs/tutorial_cumotion.md)**:
-  * `rby1_cumotion`: M/A v1.2 단일 팔, URDF에서 XRDF 생성, MoveIt/기존 컨트롤러 연결
-  * 가상 하드웨어 예제, cuMotion Docker 이미지, 호스트 실기체 연결 방법
-  * OMPL 비교 실행과 관절 상태·궤적 검증
+* 🦾 **[cuMotion 기반 RBY1 경로 계획 및 실행](docs/tutorial_cumotion.md)**:  
+  👉 **[docs/tutorial_cumotion.md](docs/tutorial_cumotion.md)** — 설치부터 예제(이동·속도·장애물)까지 순서대로
+  * 4×4 목표 토픽을 보내면 GPU(cuMotion)가 장애물을 피하는 경로를 계획하고 RB-Y1 드라이버로 실행
+  * 움직이는 도중 경로에 나타난 장애물은 멈추지 않고 다시 계획해 돌아감. 움직이는 장애물은 경로 위에서 멈춰 지나가길 기다렸다가 이어 감
+  * 시뮬레이터·실기체 동일 절차, 로봇 기종·버전·자세는 기동 시 드라이버에서 자동으로 읽음
+  * 개발자용 내용(구조·모델 번들·이미지·충돌 모델·설정·테스트·트러블슈팅)은 👉 **[docs/developer_manual.md](docs/developer_manual.md)**
 
-* 🎯 **[AprilTag 3D 마커 추적 및 rby1_apriltag 응용 패키지](docs/tutorial_apriltag.md)**:  
+* 🎯 **[AprilTag 마커 추적과 머리 추적](docs/tutorial_apriltag.md)**:  
   👉 **[docs/tutorial_apriltag.md](docs/tutorial_apriltag.md)**
-  * **cuAprilTag** 기반 GPU 가속 6-DoF 마커 포즈 추정 파이프라인
-  * **`rby1_apriltag` 응용 패키지**: 타겟 마커 ID 선별, 순방향 행렬 중앙값+SVD 회전 평균화(Jitter 안정화), 표준 `PoseStamped` 및 `/tf` 발행
-  * 도커 외부(호스트 일반 환경) 무설치 표준 토픽 연동 가이드
-  * RealSense(D405, D435, D455) 720p 및 848x480 60~90 FPS 초고속 설정
-  * ZED 카메라 및 일반 USB 웹캠 직결 파이프라인
+  * 카메라는 호스트에서(웹캠·RealSense·이미지 파일), 영상만 토픽으로 컨테이너에 → GPU 보정·검출(cuAprilTag)
+  * **`rby1_apriltag`**(C++): 대상 마커 선별, 중앙값+SVD 안정화, 표준 `PoseStamped`·TF 발행
+  * 마커 좌표로 로봇 움직이기(드라이버 저장소 `rby1_examples`): `22_marker_tracking`(손·머리가 마커를 따라감), `23_marker_shuttle`(두 마커 사이 왕복, 장애물 회피)
 
 * 🧭 **[Visual SLAM (cuVSLAM 3D 오도메트리)](docs/tutorial_visual_slam.md)** *(작성 예정)*:
   * 스테레오 카메라 및 IMU 융합 GPU 가속 실시간 6-DoF 로봇 위치 추정
@@ -136,25 +129,43 @@ source /workspaces/isaac_ros-dev/install/setup.bash
 
 ---
 
-### ⚡ AprilTag & rby1_apriltag 빠른 시작 요약 (Quickstart)
+### ⚡ cuMotion 빠른 시작 요약 (Quickstart)
 
 ```bash
-# 1. 도커 컨테이너 내부: Isaac ROS cuAprilTag 실행
-source /opt/ros/humble/setup.bash
-source /workspaces/isaac_ros-dev/install/setup.bash
-ros2 launch isaac_ros_apriltag isaac_ros_apriltag_realsense.launch.py
+# 설치 (처음 한 번)
+cd ~/isaac_ros_ws/src/rby1_isaac_ros/docker && ./make_bundles.sh              # 호스트: 모델 파일 준비
+cp ~/isaac_ros_ws/src/rby1_isaac_ros/docker/isaac_ros_common-config ~/.isaac_ros_common-config
+cd ~/isaac_ros_ws/src/isaac_ros_common/scripts && ./run_dev.sh -d ~/isaac_ros_ws   # 이미지 → 컨테이너
+colcon build --base-paths src/rby1_isaac_ros/rby1_cumotion \
+    --packages-select rby1_cumotion --symlink-install                         # 컨테이너
 
-# 2. 도커 컨테이너 내부 (추가 터미널): 타겟 마커 선별 & 포즈 안정화 노드 실행
-source /opt/ros/humble/setup.bash
-source /workspaces/isaac_ros-dev/install/setup.bash
-ros2 launch rby1_apriltag target_tag_filter.launch.py
-
-# 3. 호스트 PC 일반 터미널 (도커 진입 불필요, 추가 설치 불필요):
-ros2 topic echo /target_marker/pose
-ros2 run tf2_ros tf2_echo camera_color_optical_frame target_marker_7
-rviz2
+# 실행 (매번)
+ros2 launch rby1_driver rby1_ros2_driver.launch.py                            # 호스트: 드라이버
+ros2 run rby1_examples 06_zero_pose                                           # 호스트: 전원·서보 + 영점
+ros2 launch rby1_cumotion demo.launch.py                                      # 컨테이너: 준비 → cuMotion → 실행기 (RViz)
+ros2 run rby1_examples 15_moveit_move_hand                                    # 호스트: 예제 (튜토리얼 §4 표)
 ```
-> 💡 전체 런치 코드, 파라미터 정의 표, 카메라별 튜닝, 호스트 연동 파이썬 코드는 [docs/tutorial_apriltag.md](docs/tutorial_apriltag.md)에 상세히 수록되어 있습니다.
+> 컨테이너 터미널은 `isaac-ros`(= `docker exec -u admin`)로 엽니다. `root@…` 셸에서는 드라이버 토픽이 오지 않습니다.
+> cuMotion 런치가 떠 있으면 목표를 받을 때 **로봇이 움직입니다.** 속도·그룹 등 설정은 `rby1_cumotion/config/cumotion.yaml` 한 곳. 문제가 생기면 그 터미널의 메시지가 할 일을 알려 줍니다(자세히: [developer_manual 트러블슈팅](docs/developer_manual.md#12-트러블슈팅)).
+> 드라이버(`~/ros2_driver_ws`)는 빌드된 상태여야 합니다 — 드라이버 저장소 README.
+
+---
+
+### ⚡ AprilTag 빠른 시작 요약 (Quickstart)
+
+```bash
+# 설치 (처음 한 번, 컨테이너) — 이미지는 cuMotion과 같음
+colcon build --symlink-install --base-paths src/rby1_isaac_ros/rby1_apriltag --packages-select rby1_apriltag
+
+# 실행 (매번)
+ros2 launch rby1_additional_tools camera.launch.py                            # 호스트: 카메라 → /camera/image_raw
+ros2 launch rby1_apriltag apriltag.launch.py                                  # 컨테이너: 보정 → 검출 → /target_marker/pose
+ros2 topic echo /target_marker/pose --once                                    # 호스트: 확인
+ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head          # 호스트: 머리가 마커를 따라감 (드라이버 필요)
+ros2 run rby1_examples 22_marker_tracking                                     # 호스트: 손이 마커를 따라감 (cuMotion 기동 필요, 추적 모드를 스스로 켬)
+ros2 run rby1_examples 23_marker_shuttle                                      # 호스트: 두 마커(ids:=7,12) 아래 지점 사이 왕복
+```
+> 마커 크기(`size`, 검은 사각형 한 변 m)와 찾을 번호(`target_ids`)는 `rby1_apriltag/config/target_tags.yaml` — 이번 실행만 바꾸려면 `size:=0.08 ids:=7,12`. 마커 예제는 [docs/tutorial_cumotion.md 4.7](docs/tutorial_cumotion.md). 자세히: [docs/tutorial_apriltag.md](docs/tutorial_apriltag.md).
 
 
 ---
@@ -165,8 +176,10 @@ rviz2
   컨테이너가 실행 중인 상태에서 새 터미널 창을 열고 `isaac-ros`를 입력하면 자동으로 실행 중인 컨테이너에 attach됩니다:
   ```bash
   isaac-ros
-  # 또는 직접 명령어: docker exec -it isaac_ros_dev-x86_64-container bash
+  # 또는 직접 명령어: docker exec -it -u admin -w /workspaces/isaac_ros-dev isaac_ros_dev-x86_64-container bash
   ```
+  > ⚠️ `-u admin`을 빼면 root로 들어가고, root 셸에서는 호스트 ROS 노드(예: RB-Y1 드라이버)의 토픽이 오지 않습니다.
+  > 예전에 등록한 `isaac-ros` 함수에 `-u admin`이 없다면 [env_setup 8.2](docs/env_setup_ubuntu_22_04.md)대로 고치십시오.
 * **세션 종료**: 컨테이너 셸에서 `exit`
 * **컨테이너 강제 중지**: `docker stop isaac_ros_dev-x86_64-container`
 * **💡 의존성 보존 및 도커 이미지 커밋 (매번 apt 재설치 방지)**:

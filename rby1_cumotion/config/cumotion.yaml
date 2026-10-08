@@ -1,0 +1,160 @@
+# RB-Y1 cuMotion settings -- the single source of every default.
+#
+# cumotion.launch.py (and demo.launch.py, which adds RViz) reads this file, and so do
+# the nodes when run on their own. Edit here to change what every run uses.
+# Everything is checked when the launch starts: an unknown key, a missing key or a
+# value out of range stops it with the reason.
+#
+# One-off changes without editing:
+#   ros2 launch rby1_cumotion demo.launch.py group:=left_arm trajopt_finetune_iters:=150
+#   ros2 param set /rby1_cumotion_target_executor linear_velocity_limit 0.5   # while running
+# Another copy of this file: config:=/path/to/cumotion.yaml
+
+robot:
+  driver_namespace: rby1        # the host RB-Y1 driver's namespace
+  model: ''                     # '' = read from the driver (kind + robot_version); e.g. m_1_2 to insist
+  group: right_arm              # right_arm | left_arm | right_arm+torso | left_arm+torso
+  enable_robot: true            # turn power and servos on at start
+  ready_if_straight: true       # bend a straight planning arm to the ready pose before starting
+  straight_elbow: 0.3           # rad; an elbow closer to 0 than this counts as straight
+  ready_time: 4.0               # s for that move
+  # The planning arm's body ends at the tool frame (ee_right / ee_left): the SDK's
+  # envelope of the wrist also wraps whatever is mounted on it (7 cm past the tool
+  # frame, 7.5 cm thick), so the hand could not come near anything. What is mounted
+  # on the tool is given instead as attached modules in MoveIt's scene
+  # (rby1_moveit_objects, e.g. its config/gripper.yaml), which the executor turns
+  # into spheres on the hand. WITHOUT a module there cuMotion plans as if the hand
+  # ended at the tool frame. false: keep the SDK's envelope (no modules needed, the
+  # hand keeps about 14 cm from everything).
+  body_ends_at_tool: true
+  # What may touch anything (names, * allowed): attached modules -- cuMotion leaves
+  # them out -- and robot links -- MoveIt, which checks every path against its own
+  # model (the URDF, gripper included), is told to allow them. For the fingers that
+  # close on an object. Changeable while running:
+  #   ros2 param set /rby1_target_executor free_objects "['gripper_*finger*']"
+  free_objects: []
+
+motion:
+  # How long a move takes. With duration 0 it follows from the limits below:
+  # the slowest of (tool linear speed, tool angular speed, joint velocity limits),
+  # never shorter than minimum_time. The limits match the driver's own defaults
+  # (rby1_driver/config/driver_parameters.yaml); they are enforced here because the
+  # driver's follow_joint_trajectory does not apply them.
+  duration: 0.0                 # s; > 0 makes every move take exactly this long
+  minimum_time: 2.0             # s
+  linear_velocity_limit: 1.5    # m/s, peak speed of the tool frame
+  angular_velocity_limit: 4.712388  # rad/s, peak rotation speed of the tool frame
+  step: 0.05                    # s between waypoints sent to the driver (<= 0.5)
+  hold: 0.5                     # s the final pose is held after the move
+  endpoint_tolerance: 0.03      # rad; measured joints vs planned end
+
+impedance:
+  # Move in joint impedance instead of joint position: the arm (and the torso, in
+  # a +torso group) yields to contact, as a spring of `stiffness` per joint. The
+  # executor hands this to the driver's set_trajectory_impedance before it moves
+  # (trajectories and tracking mode alike); with enabled false it leaves the
+  # driver as it is (position, unless someone called that service). A compliant
+  # arm stops a little short:
+  # raise stiffness or motion.endpoint_tolerance if moves end in "stopped short".
+  # Simulator: 100 N·m/rad with 10 N·m (the SDK examples' values) left the wrist up
+  # to 0.5 rad short; 500 with 50 reached every target.
+  enabled: false
+  stiffness: 500.0              # N·m/rad, every joint of the group
+  damping_ratio: 1.0
+  torque_limit: 50.0            # N·m per joint
+
+tracking:
+  # Tracking mode (ros2 service call /rby1_target_executor/set_tracking std_srvs/srv/SetBool
+  # "{data: true}"): each target only moves a goal; a follower takes one step toward it
+  # at `rate` Hz from the state it last commanded and sends it to the driver's
+  # stream_joint. The targets are smoothed (`smoothing`) and a moving one is aimed
+  # ahead of (`lead`), since the robot follows its commands about 0.1 s late. No new
+  # target for `stale_after`: the arm settles at the last one.
+  #   ik   cuRobo IK every step, joints stepped toward it within max_speed and
+  #        max_acceleration and riding along with a moving target. It holds short of
+  #        an obstacle instead of going around it.
+  #   mpc  cuRobo MPC: looks ahead, so it goes around obstacles in the scene, and
+  #        trails a moving target by 0.2-0.3 s more.
+  # A target at rest is not aimed ahead of and is taken as the average of its last
+  # samples, and what counts as "at rest" grows with the camera's noise: a noisy
+  # camera makes the arm calmer and slower to start after a marker, not shakier.
+  # Simulator, a marker on a 6 cm circle, hand off its place (mean): ik 1.8 mm at
+  # 6 cm/s and 8 mm at 13 cm/s (with 1 mm of marker noise 4 and 10 mm, with 3 mm 17
+  # and 17 mm); mpc 5 and 28 mm. At rest the hand shakes by under 1 mm with 1 mm of
+  # noise and 1.4 mm with 3 mm (either method).
+  method: ik                    # ik | mpc
+  prepare: true                 # build and warm the follower at start (else on the first switch, ~8 s)
+  rate: 50.0                    # Hz of steps and stream_joint commands
+  iterations: 1                 # mpc: particle iterations per step (1: 6.4 ms; 4: 24 ms)
+  max_speed: 2.0                # ik: rad/s per joint
+  max_acceleration: 10.0        # ik: rad/s^2 per joint
+  stale_after: 0.5              # s without a new target before it reports holding at the last one
+  resync_tolerance: 0.15        # rad a joint may stay off its command (more when it moves fast) before the
+                                # follower restarts from the measured arm
+  command_delay: 0.1            # s the measured joints trail a stream_joint command (simulator: 0.11 at 50 and
+                                # 100 Hz, whatever minimum_time)
+  smoothing: 0.75               # 0..0.95, how much the targets are smoothed for where the target is, how fast
+                                # it moves and how it turns: 0 takes every sample as it is -- and aiming ahead
+                                # multiplies its noise; higher rides camera noise out and is slower to notice
+                                # a change of course
+  lead: 0.12                    # s ahead a moving target is aimed at: what the robot trails its commands by
+                                # (command_delay) plus what the targets are late by (camera, detection). The
+                                # follower's own lag is added (mpc 0.3 s). A target at rest is not aimed ahead of
+  lead_max: 0.1                 # m, at most this far ahead
+
+avoid:
+  # Obstacles that appear while the arm moves (rby1_cumotion/avoidance.py). The next
+  # `horizon` seconds of the running trajectory are checked against the planning
+  # scene; on a collision, cuRobo plans again from where the arm will be `lead`
+  # seconds later and how fast it moves there, and the result replaces the running
+  # trajectory without a stop. A moving obstacle ahead makes the arm brake on its
+  # path short of it and wait until the rest of the path is clear; if it stays
+  # blocked for wait_before_replan, a new path is planned from where the arm stands,
+  # at most max_replans times for one target. It fails when the target has no
+  # collision-free pose, when the obstacle is too close to get around or stop short
+  # of, when avoiding lasts give_up_after, or when max_replans new paths did not get
+  # through.
+  enabled: true
+  horizon: 0.5                  # s of the trajectory ahead that is checked
+  lead: 0.2                     # s from now the replacement takes over; covers planning (~0.1 s)
+  give_up_after: 5.0            # s of continuous avoiding (without stopping) before FAILED
+  wait_before_replan: 2.0       # s stopped and blocked before a new path is planned from there
+  max_replans: 3                # new paths planned while stopped, per target; then FAILED
+  check_period: 0.05            # s between checks
+  scene_period: 0.1             # s between planning scene reads
+  sweep_time: 1.0               # s a moving obstacle is swept ahead along its velocity
+  replan_time: 0.15             # s a replan may take; a collision closer than this stops the arm
+  stop_time: 0.6                # s of braking for a moving obstacle (shorter when it is closer)
+  replan_seeds: 4               # trajopt seeds of the replanner (1..32)
+  replan_steps: 24              # trajopt waypoints of the replanner (4..256)
+  replan_iters: 100             # trajopt and finetune iterations of the replanner (10..5000, 0 = cuRobo's)
+
+planner:
+  # --- Trajectory optimisation -------------------------------------------------
+  num_trajopt_time_steps: 32      # waypoints optimised = length of the returned trajectory (4..256)
+  num_trajopt_seeds: 6            # parallel trajopt seeds; costs GPU memory, not much time (1..32)
+  num_graph_seeds: 6              # graph-search seeds used when trajopt alone fails (1..32)
+  max_attempts: 10                # retries before reporting failure (1..100)
+  trajopt_finetune_iters: 400     # final polish; the main time <-> smoothness knob (1..5000)
+  interpolation_dt: 0.025         # output timestep in seconds (0.001..0.5)
+
+  # --- Inverse kinematics (cuRobo; MoveIt's kinematics.yaml is NOT used) --------
+  # Needs the image's cumotion_ik.py patch; see docs/developer_manual.md §7.
+  ik_num_seeds: 32                # parallel IK seeds (1..256)
+  ik_position_threshold: 0.005    # metres; IK counts as solved below this (0.0001..0.05)
+  ik_rotation_threshold: 0.05     # rotation error threshold (0.001..0.5)
+  ik_opt_iters: 0                 # 0 = cuRobo's per-solver default (0..10000)
+  ik_particle_opt: true           # particle stage before gradient IK
+
+  # --- World / obstacles -------------------------------------------------------
+  collision_cache_mesh: 20        # preallocated world mesh slots (0..1000)
+  collision_cache_cuboid: 20      # preallocated world cuboid slots (0..1000)
+  add_ground_plane: false         # infinite plane at z=0; forbids reaching low
+  read_esdf_world: false          # take obstacles from nvblox ESDF
+  voxel_size: 0.05                # ESDF voxel edge in metres; only with read_esdf_world (0.005..0.5)
+
+  # --- Speed and diagnostics ---------------------------------------------------
+  # Empty: the MoveIt request's velocity/acceleration scaling decides speed.
+  # A value in (0, 1]: cuMotion overrides MoveIt and uses it.
+  time_dilation_factor: ''
+  enable_curobo_debug_mode: false # slows planning; use to debug a failure, never to measure

@@ -43,7 +43,22 @@ SDK_ENV = 'RBY1_SDK_MODELS'
 DEFAULT_SDK_DIR = Path.home() / 'sdk/rby1-sdk/models'
 MESH_PREFIX = 'package://rby1_description/'
 MESH_DIRECTORY = 'meshes'
+# The head turns about one point -- head_0's and head_1's axes cross there -- so a
+# sphere around that point reaching its farthest vertex holds the head in every
+# pose. It replaces the head's own geometry (the SDK gives it none), so the planner
+# need not know where the head looks and a head tracker can turn it while the arm
+# plans: those joints are then left out of the posture check (unwatched_joints).
+HEAD_JOINTS = ('head_0', 'head_1')
+HEAD_MARGIN = 0.02  # m beyond the head's meshes, for what is mounted on it (a camera)
+# Modules attached to the hand (rby1_moveit_objects, attach: true) reach cuMotion as
+# spheres on this frame, fixed to the tool frame: the planner reserves sphere slots
+# for a link of this name and fills them through its UpdateLinkSpheres action
+# (attached.py). It must be in the XRDF's spheres for cuRobo to check it at all.
+ATTACHED_LINK = 'attached_object'
 GROUP_DIRECTORY = 'groups'
+# The launch builds the bundle the nodes use here; see activate().
+ACTIVE_BUNDLE = Path(os.environ.get('RBY1_ACTIVE_BUNDLE', '/tmp/rby1_cumotion/active'))
+ACTIVE_RECORD = 'active.json'
 # One tool frame per group: cuMotion's MoveIt plugin plans to a single end-effector
 # pose, so a torso joins an arm as redundancy rather than as a second goal.
 DEFAULT_GROUPS = ('right_arm', 'left_arm', 'right_arm+torso', 'left_arm+torso')
@@ -555,18 +570,113 @@ def worst_sphere_overlap(root, spheres, ignore, positions):
     return worst, pair
 
 
-def prepare_group(bundle, group, tool_frame=None):
+# How far past the tool frame a body sphere may still reach when the body ends there.
+TOOL_MARGIN = 0.01
+
+
+def trim_at_tool(root, spheres, tool, positions, margin=TOOL_MARGIN):
+    """End the arm's body at the tool frame: (link, spheres kept, how many were dropped).
+
+    The SDK's capsule on the last arm link is an envelope of the wrist AND whatever is
+    mounted on it (on an RB-Y1 it reaches 7 cm past ee_right, 7.5 cm thick): the hand
+    could not come near anything. Spheres of that link reaching more than `margin`
+    past the tool frame -- along the line from the link's origin to the tool -- are
+    dropped; what is mounted on the tool is then given as attached modules
+    (attached.py), which can be left out part by part. Returns (None, None, 0) when
+    the tool's ancestors carry no spheres or the tool does not sit still on that link.
+    """
+    parent = {j.find('child').get('link'): j for j in root.findall('joint')}
+    link, between = tool, []
+    while link in parent and not any(s['radius'] > 0 for s in spheres.get(link, [])):
+        between.append(parent[link])
+        link = parent[link].find('parent').get('link')
+    if link == tool or not any(s['radius'] > 0 for s in spheres.get(link, [])):
+        return None, None, 0
+
+    def tool_in_link(values):
+        frames = forward_kinematics(root, values, None)
+        return (np.linalg.inv(frames[link]) @ frames[tool])[:3, 3]
+    here = tool_in_link(positions)
+    turned = dict(positions)
+    for joint in between:
+        if joint.get('type') != 'fixed':
+            turned[joint.get('name')] = positions[joint.get('name')] + 0.7
+    if np.linalg.norm(tool_in_link(turned) - here) > 1e-6 or np.linalg.norm(here) < 1e-6:
+        return None, None, 0  # the tool moves on this link: no fixed place to end the body
+    toward = here / np.linalg.norm(here)
+    kept = [s for s in spheres[link]
+            if s['radius'] <= 0 or (np.array(s['center']) - here) @ toward + s['radius'] <= margin]
+    dropped = len(spheres[link]) - len(kept)
+    if not any(s['radius'] > 0 for s in kept):
+        kept = [{'center': [0.0, 0.0, 0.0], 'radius': PLACEHOLDER_RADIUS}]  # keeps the link on cuRobo's chain
+    return link, kept, dropped
+
+
+def head_envelope(root, bundle):
+    """(link, sphere) holding the turning head in any pose, or None without a head.
+
+    The sphere sits on the link head_0 turns on (fixed to the torso), centred where
+    the head's axes cross, with the farthest vertex of the links that turn with the
+    head plus HEAD_MARGIN as its radius.
+    """
+    joints = {joint.get('name'): joint for joint in root.findall('joint')}
+    if not all(name in joints for name in HEAD_JOINTS):
+        return None
+    first = joints[HEAD_JOINTS[0]]
+    parent, pivot = first.find('parent').get('link'), origin(first.find('origin'))[:3, 3]
+    # Frames of the turning links relative to the pivot, head at zero: the
+    # distance of a vertex from the pivot does not change as the head turns.
+    frames, pending = {first.find('child').get('link'): np.eye(4)}, list(joints.values())
+    while True:
+        ready = [j for j in pending if j.find('parent').get('link') in frames]
+        if not ready:
+            break
+        for joint in ready:
+            frames[joint.find('child').get('link')] = (frames[joint.find('parent').get('link')]
+                                                       @ origin(joint.find('origin')))
+            pending.remove(joint)
+    reach = 0.0
+    for link in root.findall('link'):
+        if link.get('name') not in frames:
+            continue
+        for collision in link.findall('collision'):
+            mesh = collision.find('geometry/mesh')
+            if mesh is None:
+                continue
+            path = Path(mesh.get('filename'))
+            vertices = mesh_vertices(path if path.is_absolute() else Path(bundle) / path)
+            if mesh.get('scale'):
+                vertices = vertices * np.array([float(v) for v in mesh.get('scale').split()])
+            at = frames[link.get('name')] @ origin(collision.find('origin'))
+            reach = max(reach, float(np.linalg.norm(vertices @ at[:3, :3].T + at[:3, 3], axis=1).max()))
+    return parent, {'center': [round(float(v), 6) for v in pivot], 'radius': round(reach + HEAD_MARGIN, 4)}
+
+
+def prepare_group(bundle, group, tool_frame=None, positions=None, body_ends_at_tool=True):
     """Add one planning group to a bundle. Needs no driver workspace, just the bundle.
 
     Spheres and the URDF are model-level; only the c-space, tool frame and the
     self-collision ignore set depend on which joints stay active, so a group
     costs kilobytes rather than another copy of the meshes.
+
+    `positions` replaces the bundle's posture: cuRobo compiles every joint
+    outside the group into its kinematics at these values, so they must be where
+    the robot actually is. Extra names (wheels, grippers) are ignored.
+
+    `body_ends_at_tool`: the planning arm's spheres stop at the tool frame
+    (trim_at_tool); what is mounted on the tool comes as attached modules.
     """
     bundle = Path(bundle)
     metadata = json.loads((bundle / 'model.json').read_text())
     root = ET.parse(bundle / 'robot.urdf').getroot()
     srdf = ET.parse(bundle / 'robot.srdf').getroot()
     spheres = yaml.safe_load((bundle / 'spheres.yaml').read_text())
+    envelope = head_envelope(root, bundle)
+    unwatched = []
+    if envelope is not None:
+        link, sphere = envelope
+        spheres.setdefault(link, []).append(sphere)
+        unwatched = list(HEAD_JOINTS)
     resolved = srdf_groups(srdf, root)
     active, tips = [], []
     for part in group.split('+'):
@@ -611,29 +721,56 @@ def prepare_group(bundle, group, tool_frame=None):
     for a, b in itertools.combinations(spheres, 2):
         if ancestry[a] == ancestry[b] and b not in ignore[a] and a not in ignore[b]:
             ignore[a].append(b)
-    defaults = metadata['default_positions']
+    defaults = dict(metadata['default_positions'])
+    trimmed = {}
+    if body_ends_at_tool:
+        link, kept, dropped = trim_at_tool(root, spheres, tool, defaults)
+        if dropped:
+            spheres[link] = kept
+            trimmed = {link: dropped}
+    if positions is not None:
+        missing = sorted(set(defaults) - set(positions))
+        if missing:
+            raise ValueError(f'Posture is missing joints {missing}')
+        bad = sorted(name for name in defaults if not math.isfinite(positions[name]))
+        if bad:
+            raise ValueError(f'Posture has non-finite joints {bad}')
+        defaults = {name: float(positions[name]) for name in defaults}
     # Unlocking joints exposes link pairs that were previously rigid, so verify
     # here rather than letting cuMotion reject every query at runtime.
     clearance, pair = worst_sphere_overlap(root, spheres, ignore, defaults)
     if clearance < 0:
+        where = 'in the robot\'s current posture' if positions is not None else 'at the default posture'
         raise ValueError(
             f'Group {group} starts in self-collision: {pair[0]} and {pair[1]} overlap by '
-            f'{-clearance * 1000:.1f} mm at the default posture. Either the posture is '
-            'genuinely unreachable, or this pair belongs in the SDK collision mask.')
+            f'{-clearance * 1000:.1f} mm {where}. '
+            + ('Move the robot to another posture (e.g. ros2 run rby1_examples 06_zero_pose) and '
+               'start the launch again.' if positions is not None else
+               'Either the posture is genuinely unreachable, or this pair belongs in the SDK '
+               'collision mask.'))
     # cuRobo locks every controlled joint, so all of them must be on its chain.
     stranded = sorted(set(defaults) - reachable_joints(root, [tool, *spheres]))
     if stranded:
         raise ValueError(f'Group {group} leaves {stranded} off the kinematic chain cuRobo '
                          'builds; the bundle needs a placeholder sphere on their links')
+    # The attached-object frame moves with the tool; its spheres are not checked
+    # against the body the tool is on or the one before it (the wrist).
+    ignore[ATTACHED_LINK] = [link for link in spheres
+                             if ancestry[link] in (ancestry[tool], ancestry[tool][:-1])]
     xrdf = {
         'format': 'xrdf', 'format_version': 1.0,
+        'modifiers': [{'add_frame': {
+            'frame_name': ATTACHED_LINK, 'parent_frame_name': tool, 'joint_name': f'{ATTACHED_LINK}_joint',
+            'joint_type': 'FIXED',
+            'fixed_transform': {'position': [0.0, 0.0, 0.0], 'orientation': {'w': 1.0, 'xyz': [0.0, 0.0, 0.0]}}}}],
         'default_joint_positions': defaults,
         'cspace': {'joint_names': active, 'acceleration_limits': [1.0] * len(active),
                    'jerk_limits': [10.0] * len(active)},
         'tool_frames': [tool],
         'collision': {'geometry': 'robot', 'buffer_distance': 0.0},
         'self_collision': {'geometry': 'robot', 'ignore': ignore, 'buffer_distance': {}},
-        'geometry': {'robot': {'spheres': spheres}},
+        'geometry': {'robot': {'spheres': {
+            **spheres, ATTACHED_LINK: [{'center': [0.0, 0.0, 0.0], 'radius': PLACEHOLDER_RADIUS}]}}},
     }
     controllers = controllers_for(
         yaml.safe_load((bundle / 'ros2_controllers.yaml').read_text()), active)
@@ -644,9 +781,69 @@ def prepare_group(bundle, group, tool_frame=None):
     detail = {'group': entry.name, 'srdf_groups': group.split('+'), 'tool_frame': tool,
               'active_joints': active, 'controllers': controllers,
               'locked_joints': {k: v for k, v in defaults.items() if k not in active},
+              'unwatched_joints': [name for name in unwatched if name not in active],
+              'body_ends_at_tool': bool(trimmed), 'trimmed_spheres': trimmed,
               'xrdf_sha256': hashlib.sha256(xrdf_text.encode()).hexdigest()}
+    if positions is not None:
+        # Overrides model.json's posture for whoever loads this group.
+        detail['default_positions'] = defaults
     (entry / 'group.json').write_text(json.dumps(detail, indent=2) + '\n')
     return detail
+
+
+def activate(source, group, destination=None, positions=None, extra=None, body_ends_at_tool=True):
+    """Build the runtime bundle every node uses, and return its directory.
+
+    The heavy, posture-independent artifacts (URDF, meshes, spheres, configs)
+    are symlinked from `source`; only the group -- the part that fixes where the
+    joints outside it sit -- is generated, from `positions` when given (the
+    robot's posture at launch) or else the bundle's own. That takes about a
+    second, so the planner can start from whatever posture the robot is in.
+    `extra` is recorded in active.json for the tools that read it.
+    """
+    source = Path(source).resolve()
+    destination = Path(destination or ACTIVE_BUNDLE)
+    if source == destination.resolve():
+        raise ValueError('The runtime bundle cannot be built in place of its source')
+    load_model(source, bundle_groups(source)[0])  # integrity of the shared artifacts
+    group = srdf_group_name(source, group)
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    for entry in source.iterdir():
+        if entry.name not in (GROUP_DIRECTORY, ACTIVE_RECORD):
+            (destination / entry.name).symlink_to(entry)
+    detail = prepare_group(destination, group, positions=positions, body_ends_at_tool=body_ends_at_tool)
+    record = {'source': str(source), 'group': detail['group'],
+              'posture': 'measured' if positions is not None else 'bundle', **(extra or {})}
+    (destination / ACTIVE_RECORD).write_text(json.dumps(record, indent=2) + '\n')
+    return destination
+
+
+def srdf_group_name(bundle, group):
+    """Accept either spelling: 'right_arm+torso' or its directory 'right_arm_torso'."""
+    entry = Path(bundle) / GROUP_DIRECTORY / group / 'group.json'
+    if '+' not in group and entry.is_file():
+        return '+'.join(json.loads(entry.read_text())['srdf_groups'])
+    return group
+
+
+def active_record(directory=None):
+    """What the runtime bundle was built from, or None when there is none."""
+    path = Path(directory or ACTIVE_BUNDLE) / ACTIVE_RECORD
+    return json.loads(path.read_text()) if path.is_file() else None
+
+
+def resolve_bundle(model_directory):
+    """An explicit bundle path, or else the runtime bundle the launch prepared."""
+    if model_directory:
+        return Path(model_directory)
+    if active_record() is None:
+        raise ValueError(
+            'No model_directory given and no runtime bundle at '
+            f'{ACTIVE_BUNDLE}. Start cumotion.launch.py or demo.launch.py first -- it prepares one from the '
+            'robot -- or pass -p model_directory:=$RBY1_BUNDLES/<model>.')
+    return ACTIVE_BUNDLE
 
 
 def bundle_groups(directory):

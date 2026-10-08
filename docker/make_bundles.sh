@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Build the model bundles that Dockerfile.cumotion bakes into the image.
+# Stage everything Dockerfile.cumotion takes from the driver side of the host:
+#   bundles/<model>/   model bundles (URDF/SRDF + SDK capsules)
+#   driver_msgs/       rby1_msgs interface definitions, so container nodes can
+#                      call the driver's services and actions
 #
-# Run this on the host, where the driver workspace lives. Run it again only when
-# the driver's URDF or SRDF changes -- model.json records a source_sha256 of both
-# so a stale bundle can be told apart from a current one.
+# Required once before the first image build: both directories are gitignored,
+# so a fresh clone has neither and the image would bake empty ones.
+# Run it again when the driver's URDF, SRDF or rby1_msgs change -- model.json
+# records a source_sha256 so a stale bundle can be told apart from a current one.
 set -eo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +40,17 @@ for model in "${MODELS[@]}"; do
         --output "${HERE}/bundles/${model}"
 done
 
+# Interface definitions only -- the driver itself, and the SDK it links, stay on
+# the host. The container needs the types to talk to the driver over DDS.
+MSGS_SOURCE="${DRIVER_WORKSPACE}/src/rby1_ros2/rby1_msgs"
+if [[ ! -f "${MSGS_SOURCE}/package.xml" ]]; then
+    echo "rby1_msgs not found at ${MSGS_SOURCE}" >&2
+    exit 1
+fi
+rm -rf "${HERE}/driver_msgs"
+mkdir -p "${HERE}/driver_msgs"
+cp -r "${MSGS_SOURCE}" "${HERE}/driver_msgs/rby1_msgs"
+
 echo
-du -sh "${HERE}/bundles"/*
-echo "Bundles ready. Rebuild the image to bake them in."
+du -sh "${HERE}/bundles"/* "${HERE}/driver_msgs"
+echo "Staged. Rebuild the image to bake them in."

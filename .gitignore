@@ -21,3 +21,6 @@ isaac_ros_*/
 # Generated model bundles staged for the Docker image (docker/make_bundles.sh)
 docker/bundles/*
 !docker/bundles/.gitkeep
+# rby1_msgs staged from the driver workspace (docker/make_bundles.sh)
+docker/driver_msgs/*
+!docker/driver_msgs/.gitkeep

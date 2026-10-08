@@ -1,4 +1,8 @@
-"""GPU side; runs cuMotion against a self-contained model bundle."""
+"""GPU side; runs cuMotion against a self-contained model bundle.
+
+Planner defaults come from the planner section of config/cumotion.yaml; a launch argument
+overrides one entry. A bad value is rejected here, not at the first query.
+"""
 
 from pathlib import Path
 
@@ -7,13 +11,22 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventH
 from launch.event_handlers import OnShutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
 
+from rby1_cumotion import planner_params
 from rby1_cumotion.model import load_model, write_resolved_urdf
 
 
 def setup(context):
-    directory = Path(LaunchConfiguration('model_directory').perform(context)).resolve()
-    metadata, root = load_model(directory, LaunchConfiguration('group').perform(context) or None)
+    def value(name):
+        return LaunchConfiguration(name).perform(context)
+
+    directory = Path(value('model_directory')).resolve()
+    metadata, root = load_model(directory, value('group') or None)
+    # Validate before writing the temporary URDF, so a bad value leaves nothing behind.
+    default_config = Path(get_package_share_directory('rby1_cumotion')) / 'config' / \
+        planner_params.CONFIG_NAME
+    settings = planner_params.resolve(value, default_config)
     urdf_path = write_resolved_urdf(root)
     return [
         RegisterEventHandler(OnShutdown(on_shutdown=[OpaqueFunction(
@@ -25,13 +38,8 @@ def setup(context):
                 'robot': metadata['xrdf_path'],
                 'urdf_path': urdf_path,
                 'tool_frame': metadata['tool_frame'],
-                'joint_states_topic': LaunchConfiguration('joint_states_topic'),
-                'read_esdf_world': False,
-                'add_ground_plane': False,
-                # time_dilation_factor is ignored unless override_moveit_scaling_factors
-                # is true; MoveIt's request scaling wins. See cumotion_planner.py:649.
-                'override_moveit_scaling_factors': False,
-                'interpolation_dt': 0.025,
+                'joint_states_topic': value('joint_states_topic'),
+                **settings,
             }],
         ),
     ]
@@ -43,5 +51,6 @@ def generate_launch_description():
         DeclareLaunchArgument('group', default_value='',
                               description='Planning group in the bundle; required when it holds several'),
         DeclareLaunchArgument('joint_states_topic', default_value='/joint_states'),
+        *planner_params.declare(DeclareLaunchArgument),
         OpaqueFunction(function=setup),
     ])

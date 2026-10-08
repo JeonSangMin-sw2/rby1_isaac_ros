@@ -37,7 +37,7 @@ def main():
             continue
         if text.count(old) != 1:
             sys.exit(f'{path}: expected one occurrence to patch, found {text.count(old)}. '
-                     'cuRobo changed upstream; revisit docs/tutorial_cumotion.md.')
+                     'cuRobo changed upstream; revisit docs/developer_manual.md §3.')
         path.write_text(text.replace(old, new))
         applied += 1
     print(f'cuRobo compatibility: {applied} applied, {len(EDITS) - applied} already present')

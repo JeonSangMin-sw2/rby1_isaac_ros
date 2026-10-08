@@ -1,6 +1,14 @@
+# 마커 설정 (apriltag.launch.py). 고친 파일은 config:=/경로/my_tags.yaml 로 씁니다.
+apriltag:
+  ros__parameters:
+    size: 0.08                       # 마커 검은 사각형 한 변 (m). 인쇄물을 자로 재서 넣습니다 — 틀리면 거리가 그 비율만큼 틀립니다.
+                                       # 마커 자세는 이 크기와 카메라 보정값으로 영상 한 장에서 계산합니다(깊이 영상은 쓰지 않음).
+                                       # 한 번에 쓰는 마커는 모두 이 크기여야 합니다.
+    tag_family: "tag36h11"             # 마커 패밀리
+
 target_tag_filter:
   ros__parameters:
-    target_ids: [7]                   # 필터링할 AprilTag ID 화이트리스트
+    target_ids: [7,8]                   # 필터링할 AprilTag ID 화이트리스트
     input_topic: "/tag_detections"     # Isaac ROS cuAprilTag 감지 토픽
     output_pose_topic: "/target_marker/pose" # 표준 ROS 2 PoseStamped 토픽
     broadcast_tf: true                 # TF 변환 브로드캐스트 여부

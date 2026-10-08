@@ -42,7 +42,75 @@ RUN mkdir -p ${TORCH_EXTENSIONS_DIR} ${TRITON_CACHE_DIR} ${XDG_CACHE_HOME} \
 curobo.curobolib.tensor_step, curobo.curobolib.opt, curobo.curobolib.ls" \
     && chmod -R a+rwX /opt/rby1
 
+# AprilTag detection and image rectification come from NVIDIA's apt repository,
+# like cuMotion above, so the workspace needs no source clones of
+# isaac_ros_apriltag or isaac_ros_image_pipeline. Cameras stay on the host: images
+# arrive as ROS topics (rby1_additional_tools in the driver workspace).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-humble-isaac-ros-apriltag \
+        ros-humble-isaac-ros-image-proc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Everything below changes more often than the kernels above, so it sits after
+# them: editing a patch or restaging bundles must not cost a kernel recompile.
+
+# cuMotion never reads MoveIt's kinematics.yaml; its IK is cuRobo's. This opens
+# cuRobo's IK settings as node parameters (config/cumotion.yaml, planner.ik_*).
+COPY patches/cumotion_ik.py /opt/rby1/patches/cumotion_ik.py
+RUN python3 /opt/rby1/patches/cumotion_ik.py
+
+# Upstream never removes an obstacle once the planning scene drops it: cuMotion
+# skips updating an empty scene, and cuRobo skips disabling stale meshes/cuboids
+# when the new world has none of that type. Removed obstacles kept blocking
+# every plan until restart (measured 0/5). See the patch for the three sites.
+COPY patches/world_clear.py /opt/rby1/patches/world_clear.py
+RUN python3 /opt/rby1/patches/world_clear.py
+
+# Driver interface definitions staged by docker/make_bundles.sh -- types only;
+# the driver and the SDK stay on the host. Installed into /opt/ros/humble the
+# way an apt package would be, so nodes see rby1_msgs after sourcing ROS alone.
+#
+# Never colcon-build with --install-base /opt/ros/humble: colcon then rewrites
+# the distro's setup.sh/local_setup.* with its own, which knows only the package
+# it just built. The distro's environment hooks stop running, liburdfdom drops
+# off LD_LIBRARY_PATH, and every node that parses a URDF (robot_state_publisher,
+# move_group) aborts with a pluginlib::LibraryLoadException. So build into a
+# staging prefix and copy the package's files, leaving the root scripts alone.
+COPY driver_msgs /opt/rby1/driver_msgs/src
+RUN if [ ! -f /opt/rby1/driver_msgs/src/rby1_msgs/package.xml ]; then \
+        echo "driver_msgs is empty: run docker/make_bundles.sh on the host first" >&2; exit 1; \
+    fi \
+    && . /opt/ros/humble/setup.sh \
+    && cd /opt/rby1/driver_msgs \
+    && colcon build --merge-install --install-base /tmp/rby1_msgs_install \
+        --cmake-args -DBUILD_TESTING=OFF \
+    && for part in include lib local share; do \
+           if [ -d /tmp/rby1_msgs_install/$part ]; then \
+               cp -a /tmp/rby1_msgs_install/$part/. /opt/ros/humble/$part/; \
+           fi; \
+       done \
+    && rm -rf /opt/ros/humble/share/colcon-core /tmp/rby1_msgs_install build log \
+    && if grep -q "colcon_core" /opt/ros/humble/setup.sh; then \
+           echo "/opt/ros/humble/setup.sh was overwritten by colcon" >&2; exit 1; \
+       fi \
+    && bash -c '. /opt/ros/humble/setup.bash \
+        && python3 -c "import rby1_msgs.srv, rby1_msgs.action" \
+        && ! ldd /opt/ros/humble/lib/liburdf_xml_parser.so | grep -q "not found"'
+
 # Bundles built on the host by docker/make_bundles.sh. Baking them is what frees
 # the image from needing rby1_description or rby1_moveit_* at all.
 COPY bundles ${RBY1_BUNDLES}
-RUN chmod -R a+rX ${RBY1_BUNDLES}
+# docker/bundles is gitignored, so a fresh clone holds only .gitkeep here. Fail
+# the build instead of shipping an image whose $RBY1_BUNDLES is silently empty.
+RUN if [ -z "$(find ${RBY1_BUNDLES} -mindepth 2 -maxdepth 2 -name model.json)" ]; then \
+        echo "No model bundles: run docker/make_bundles.sh on the host first" >&2; exit 1; \
+    fi \
+    && chmod -R a+rX ${RBY1_BUNDLES}
+
+# Interactive shells see the workspace build too, so `ros2 run rby1_cumotion ...`
+# works right after entering the container. The base image's bash.bashrc
+# already sources /opt/ros/humble; this adds the overlay when it has been built.
+RUN printf '%s\n' '' '# rby1_cumotion: source the workspace build when there is one' \
+        'if [ -f "${ISAAC_ROS_WS:-/workspaces/isaac_ros-dev}/install/setup.bash" ]; then' \
+        '    source "${ISAAC_ROS_WS:-/workspaces/isaac_ros-dev}/install/setup.bash"' \
+        'fi' >> /etc/bash.bashrc

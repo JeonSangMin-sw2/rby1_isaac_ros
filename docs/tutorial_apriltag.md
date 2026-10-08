@@ -1,428 +1,259 @@
-# 🎯 Isaac ROS AprilTag 실전 가이드 & 애플리케이션 개발 매뉴얼 (`tutorial_apriltag.md`)
+# RB-Y1 AprilTag 사용 가이드
 
-NVIDIA GPU 가속 비전 라이브러리(`cuAprilTag`, `NITROS`)를 활용하여 고성능 6-DoF 마커 추적 파이프라인을 구축하고, RBY1 로봇 애플리케이션 연동을 위한 타겟 마커 선별 및 포즈 안정화 패키지(`rby1_apriltag`)를 활용하는 종합 개발 매뉴얼입니다.
-
----
-
-## 1. 🏗️ 시스템 아키텍처 및 GPU 파이프라인
-
-Isaac ROS AprilTag는 GPU 메모리 상에서 직접 연산되는 Zero-Copy 전송(`NITROS`)을 극대화하기 위해 독립 프로세스가 아닌 **Composable Node** 형태로 단일 컨테이너(`component_container_mt`) 내에 로드되어 구동됩니다.
-
-검출된 모든 마커 좌표는 응용 패키지(`rby1_apriltag`)를 통해 특정 타겟 ID만 선별되고 순방향 행렬 필터링을 거쳐, **도커 외부의 로봇 제어기나 호스트 애플리케이션이 추가 설치 없이 즉시 사용할 수 있는 표준 ROS 2 토픽(`PoseStamped`) 및 TF로 발행**됩니다.
+카메라 영상에서 AprilTag 마커를 GPU로 찾아, 지정한 마커의 자세를 표준 ROS 토픽과 TF로 내보냅니다. 카메라는 호스트에서
+켜고 영상만 컨테이너로 넘깁니다. 그 좌표로 손이나 머리가 마커를 따라가게 하는 예제는 §3.4에 있습니다.
 
 ```mermaid
-flowchart TD
-    subgraph Isaac_ROS_Container ["🐳 Isaac ROS GPU 컨테이너 (isaac_ros-dev)"]
-        CAM["카메라 노드 (RealSense / ZED / USB)\n(/image_raw)"]
-        -->|"GPU Zero-Copy (NITROS)"| RECT["rectify_node (GPU 왜곡 보정)\n(/image_rect)"]
-        -->|"GPU Zero-Copy (NITROS)"| APRIL["apriltag_node (cuAprilTag 6-DoF)\n(/tag_detections, /tf)"]
-        APRIL -->|"AprilTagDetectionArray"| FILTER["rby1_apriltag (target_tag_filter)\n- 타겟 ID 선별\n- Median + SVD 포즈 안정화"]
+flowchart LR
+    subgraph host["호스트"]
+        camera["카메라<br/>camera.launch.py"]
+        driver["RB-Y1 드라이버"]
+        tracker["마커 예제<br/>22_marker_tracking<br/>23_marker_shuttle"]
     end
-
-    subgraph Host_System ["💻 호스트 PC / 로봇 제어기 (도커 외부 일반 환경)"]
-        FILTER -->|"표준 geometry_msgs/PoseStamped\n(/target_marker/pose)"| CTRL["RBY1 로봇 제어 노드 / 파이썬 스크립트\n(추가 패키지 설치 불필요!)"]
-        FILTER -->|"/tf (target_marker_<id>)"| RVIZ["RViz2 / TF 모니터링"]
+    subgraph container["컨테이너 (GPU)"]
+        rectify["왜곡 보정<br/>RectifyNode"]
+        apriltag["마커 검출<br/>AprilTagNode"]
+        filter["대상 마커 선별·안정화<br/>target_tag_filter"]
     end
+    camera -->|"/camera/image_raw<br/>/camera/camera_info"| rectify
+    rectify --> apriltag
+    apriltag -->|"/tag_detections"| filter
+    filter -->|"/target_marker_&lt;id&gt;/pose<br/>TF target_marker_&lt;id&gt;"| tracker
+    tracker -->|"머리: stream_joint<br/>손: cuMotion 실행기 경유"| driver
 ```
 
----
+**위에서 아래로 순서대로 따라 하면 됩니다.** 문제가 생기면 그 터미널에 나오는 메시지가 원인과 할 일을 알려 줍니다.
+더 자세한 원인은 [developer_manual.md의 트러블슈팅](developer_manual.md#12-트러블슈팅)에 있습니다.
 
-## 2. 📷 센서별 파이프라인 구성 및 파라미터 가이드
+> ⚠️ 시뮬레이터와 합성 마커 영상으로 확인한 절차입니다. 실제 카메라는 영상이 컨테이너까지 넘어가는 것만 확인했고(RealSense D405), 실제 마커·로봇으로는 아직 돌려 보지 않았습니다.
 
-### 2.1. RealSense 제품군별 설정 (D405 vs D435 vs D455)
-
-모든 RealSense 제품군은 동일한 드라이버(`realsense2_camera`)를 사용하지만, 광학계와 센서 구조에 따라 적용해야 하는 파라미터 경로 및 최적 해상도가 다릅니다.
-
-| 카메라 모델 | 광학계 및 센서 구조 | 해상도 / FPS 설정 파라미터 | 권장 설정값 | 센서 특성 및 팁 |
-| :--- | :--- | :--- | :--- | :--- |
-| **D405** | 서브밀리미터 매크로<br/>(Stereo RGB 일체형) | `depth_module.color_profile` | `'1280x720x30'`<br/>*(고속: `'848x480x60'`)* | 독립 RGB 센서가 없으므로 `depth_module` 설정을 따름. 1080p 미지원. 7~50cm 근거리 정밀 작업에 최적. |
-| **D435 / D435i** | 독립 RGB 센서 +<br/>Stereo Depth | `rgb_camera.color_profile` | `'1920x1080x30'`<br/>`'1280x720x30'` | 범용 표준 센서. 1080p, 720p, 848x480(60/90fps) 지원. D435i는 IMU 내장. |
-| **D455** | 글로벌 셔터 RGB +<br/>광시야각(FOV) | `rgb_camera.color_profile` | `'1280x800x30'`<br/>`'848x480x60'` | RGB 화각이 넓어 로봇 이동 시 마커 추적에 최적. 1280x800(16:10) 기본 비율 지원. |
-
-> **⚠️ 파라미터 적용 주의**: D405 모델은 `rgb_camera.color_profile`을 설정하면 무시되므로 반드시 `depth_module.color_profile`을 사용해야 합니다.
-
----
-
-### 2.2. 초고속 마커 트래킹 설정 (848x480 @ 60~90 FPS)
-
-`cuAprilTag` 알고리즘은 NVIDIA RTX GPU 기준 검출 시간이 약 **0.8ms(1,000 FPS 이상)**에 불과하므로, 센서가 지원하는 최대 FPS로 병목 없이 구동할 수 있습니다. 로봇 팔의 고속 핸드-아이 트래킹이나 빠른 모바일 베이스 주행 시 아래와 같이 해상도를 낮추고 FPS를 높입니다.
-
-* **설정 방법**:
-  1. `rectify_node`의 출력 해상도를 `848x480`으로 변경
-  2. `realsense2_camera`의 컬러 프로필을 `848x480x60` (또는 `848x480x90`)으로 지정
-
-```python
-# 1. GPU 왜곡 보정 해상도 변경
-ComposableNode(
-    package='isaac_ros_image_proc',
-    plugin='nvidia::isaac_ros::image_proc::RectifyNode',
-    name='rectify',
-    parameters=[{
-        'output_width': 848,
-        'output_height': 480,
-    }],
-    remappings=[
-        ('image_raw', '/realsense2_camera/color/image_raw'),
-        ('camera_info', '/realsense2_camera/color/camera_info'),
-    ]
-),
-
-# 2. 카메라 컬러 프로필 고속 모드 적용
-ComposableNode(
-    package='realsense2_camera',
-    plugin='realsense2_camera::RealSenseNodeFactory',
-    name='realsense2_camera',
-    parameters=[{
-        'depth_module.color_profile': '848x480x60',  # D405
-        'rgb_camera.color_profile': '848x480x60',    # D435/D455
-        'enable_depth': False,                       # 대역폭 확보를 위해 Depth OFF
-        'enable_color': True,
-    }]
-)
-```
-
----
-
-### 2.3. Stereolabs ZED 카메라 직결 파이프라인 (Rectify 생략)
-
-ZED 카메라(ZED 2, ZED 2i, ZED X, ZED Mini)는 카메라 내부 공장 캘리브레이션 데이터를 기반으로 드라이버(`zed_wrapper`) 내부 GPU에서 이미 완벽히 왜곡 보정된 이미지(`/zed/zed_node/rgb/image_rect_color`)를 발행합니다.
-
-* **장점**: 별도의 `rectify_node`를 둘 필요 없이 **AprilTag 노드로 직접 연결**되므로 GPU 메모리와 파이프라인 지연(Latency)이 크게 절약됩니다.
-
-```python
-# ZED 카메라와 cuAprilTag 직결 예시
-ComposableNode(
-    package='isaac_ros_apriltag',
-    plugin='nvidia::isaac_ros::apriltag::AprilTagNode',
-    name='apriltag',
-    parameters=[{
-        'size': 0.08,
-        'max_tags': 64,
-        'tag_family': 'tag36h11',
-    }],
-    remappings=[
-        ('image', '/zed/zed_node/rgb/image_rect_color'),
-        ('camera_info', '/zed/zed_node/rgb/camera_info'),
-    ]
-)
-```
-
----
-
-### 2.4. 일반 USB 웹캠 파이프라인 (`v4l2_camera` + 캘리브레이션)
-
-C920, Brio 등 일반 USB 웹캠을 사용하는 경우 왜곡이 보정되어 있지 않으므로 다음 단계가 필수적입니다:
-
-1. **드라이버 설치**:
-   ```bash
-   sudo apt install -y ros-humble-v4l2-camera ros-humble-camera-calibration
-   ```
-2. **카메라 캘리브레이션**: 체커보드를 사용하여 렌즈 왜곡 계수를 측정한 후 생성된 `ost.yaml` 파일을 드라이버에 `camera_info_url` 파라미터로 로드합니다.
-3. **파이프라인 구성**: `v4l2_camera` $\rightarrow$ `rectify_node` $\rightarrow$ `apriltag_node`
-
----
-
-## 3. ⚙️ Isaac ROS AprilTag 기본 런치 및 실행
-
-### 3.1. 런치 파일 (`isaac_ros_apriltag_realsense.launch.py`)
-
-* **파일 위치**: `~/isaac_ros_ws/src/isaac_ros_apriltag/isaac_ros_apriltag/launch/isaac_ros_apriltag_realsense.launch.py`
-
-#### 핵심 파라미터 및 리매핑 상세 표
-
-| 노드 (컴포넌트) | 파라미터 / 리매핑 항목 | 기본 설정값 | 상세 설명 및 설정 가이드 |
-| :--- | :--- | :--- | :--- |
-| **`rectify_node`**<br/>*(GPU 왜곡 보정)* | `output_width`<br/>`output_height` | `1280`<br/>`720` | 카메라의 입력 해상도와 일치시킵니다. (D405: 1280x720 권장, 고속: 848x480) |
-| | `remappings` | `image_raw` $\rightarrow$ `/realsense2_camera/color/image_raw`<br/>`camera_info` $\rightarrow$ `/realsense2_camera/color/camera_info` | 카메라 드라이버의 원본 컬러 영상 및 캘리브레이션 토픽 연결. |
-| **`apriltag_node`**<br/>*(cuAprilTag 검출)* | `size` | `0.08` | **실제 마커 한 변의 물리적 길이 (단위: 미터)**.<br/>⚠️ 실제 마커 크기(예: 8cm $\rightarrow$ `0.08`, 5cm $\rightarrow$ `0.05`)와 다르면 3D 거리(Z축 depth)에 비례 오차가 발생합니다. |
-| | `tag_family` | `'tag36h11'` | 마커 패밀리 종류 (기본값: `'tag36h11'`, 그 외 `'tag16h5'`, `'tag25h9'` 등 지원). |
-| | `max_tags` | `64` | 한 프레임에서 동시에 추적할 수 있는 최대 마커 개수. |
-| | `remappings` | `image` $\rightarrow$ `/image_rect`<br/>`camera_info` $\rightarrow$ `/camera_info_rect` | GPU에서 왜곡 보정된 NITROS Zero-Copy 스트림 직결. |
-| **`realsense_camera_node`**<br/>*(카메라 드라이버)* | `depth_module.color_profile`<br/>`rgb_camera.color_profile` | `'1280x720x30'` | 컬러 센서 해상도 및 FPS 지정. |
-| | `enable_depth`<br/>`enable_infra1, 2` | `False` | 불필요한 깊이/적외선 센서를 꺼서 USB 대역폭 및 CPU 부하 절감. |
-| | `enable_color` | `True` | 컬러 RGB 스트림 활성화. |
-
-#### 런치 파일 코드 전문
-
-```python
-import launch
-from launch_ros.actions import ComposableNodeContainer
-from launch_ros.descriptions import ComposableNode
-
-
-def generate_launch_description():
-    # 1. GPU 왜곡 보정 노드 (D405 1280x720)
-    rectify_node = ComposableNode(
-        package='isaac_ros_image_proc',
-        plugin='nvidia::isaac_ros::image_proc::RectifyNode',
-        name='rectify',
-        namespace='',
-        parameters=[{
-            'output_width': 1280,
-            'output_height': 720,
-        }],
-        remappings=[
-            ('image_raw', '/realsense2_camera/color/image_raw'),
-            ('camera_info', '/realsense2_camera/color/camera_info'),
-        ]
-    )
-
-    # 2. AprilTag 6-DoF 포즈 추정 노드 (Zero-Copy GPU 스트림)
-    apriltag_node = ComposableNode(
-        package='isaac_ros_apriltag',
-        plugin='nvidia::isaac_ros::apriltag::AprilTagNode',
-        name='apriltag',
-        namespace='',
-        parameters=[{
-            'size': 0.08,        # 실제 마커 한 변 길이 (미터)
-            'max_tags': 64,
-            'tag_family': 'tag36h11',
-        }],
-        remappings=[
-            ('image', '/image_rect'),
-            ('camera_info', '/camera_info_rect'),
-        ]
-    )
-
-    # 3. RealSense 카메라 노드
-    realsense_camera_node = ComposableNode(
-        package='realsense2_camera',
-        plugin='realsense2_camera::RealSenseNodeFactory',
-        name='realsense2_camera',
-        namespace='',
-        parameters=[{
-            'depth_module.color_profile': '1280x720x30',
-            'rgb_camera.color_profile': '1280x720x30',
-            'enable_infra1': False,
-            'enable_infra2': False,
-            'enable_depth': False,
-            'enable_color': True,
-        }]
-    )
-
-    apriltag_container = ComposableNodeContainer(
-        package='rclcpp_components',
-        name='apriltag_container',
-        namespace='',
-        executable='component_container_mt',
-        composable_node_descriptions=[
-            rectify_node,
-            apriltag_node,
-            realsense_camera_node
-        ],
-        output='screen'
-    )
-
-    return launch.LaunchDescription([apriltag_container])
-```
-
----
-
-### 3.2. 컨테이너 내부 실행
+### 한눈에 보기
 
 ```bash
-# 도커 컨테이너 내부에서 실행
-source /opt/ros/humble/setup.bash
-source /workspaces/isaac_ros-dev/install/setup.bash
-
-ros2 launch isaac_ros_apriltag isaac_ros_apriltag_realsense.launch.py
+# 터미널1 : 호스트
+ros2 launch rby1_driver rby1_ros2_driver.launch.py                  # 드라이버 (로봇을 움직일 때)
+# 터미널2 : 호스트
+ros2 launch rby1_additional_tools camera.launch.py                  # 카메라 → 토픽
+# 터미널3 : 컨테이너 (isaac-ros)
+ros2 launch rby1_apriltag apriltag.launch.py                        # 마커 검출 → /target_marker/pose
+# 터미널4 : 호스트
+ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head  # 머리가 마커를 따라감 (§3.4)
 ```
 
 ---
 
-### 3.3. 호스트 PC에서 직접 모니터링 및 RViz2 시각화
+## 1. 준비물
 
-도커 컨테이너에 들어가지 않고, **호스트 일반 터미널**에서 아래 명령으로 마커 좌표와 RViz2 화면을 직접 확인합니다:
+| 항목 | 값 |
+|---|---|
+| 환경 | [tutorial_cumotion.md 1. 준비물](tutorial_cumotion.md#1-준비물)과 같음 (GPU, Docker, `isaac-ros`, 드라이버 워크스페이스) |
+| 카메라 | USB 웹캠, 또는 RealSense(호스트에 `sudo apt install ros-humble-librealsense2` 뒤 `rby1_additional_tools` 빌드, realsense-ros는 필요 없음) — 호스트에 연결 |
+| 마커 | `tag36h11` 패밀리 인쇄물. 검은 사각형 한 변 길이를 자로 재 둡니다(→ 설정 파일의 `size`). 여러 개를 쓰면 모두 같은 크기로 인쇄합니다. 이미지: [apriltag-imgs/tag36h11](https://github.com/AprilRobotics/apriltag-imgs/tree/master/tag36h11) |
+
+> 호스트와 컨테이너의 `ROS_DOMAIN_ID`가 같아야 합니다(둘 다 설정하지 않았다면 이미 같습니다).
+
+---
+
+## 2. 설치 (처음 한 번)
+
+### 2.1. 이미지 — 호스트
+
+cuMotion과 같은 이미지를 씁니다. [tutorial_cumotion.md 2.1](tutorial_cumotion.md#21-이미지-만들기--호스트)대로 만들었다면
+AprilTag 패키지(`isaac_ros_apriltag`, `isaac_ros_image_proc`)가 이미 들어 있습니다.
+
+### 2.2. 패키지 빌드 — 컨테이너
 
 ```bash
-# 1. 3D 좌표 변환(TF) 실시간 수치 확인 (예: 7번 태그)
-ros2 run tf2_ros tf2_echo camera_color_optical_frame tag36h11:7
-
-# 2. RViz2 3D 시각화
-rviz2
-```
-
-* **RViz2 권장 설정**:
-  * `Fixed Frame`: `camera_color_optical_frame`
-  * `TF` Display 추가 $\rightarrow$ 마커의 6-DoF 축(RGB) 표시 확인
-  * `Image` Display 추가 (Topic: `/image_rect`) $\rightarrow$ 왜곡 보정된 영상 스트림 확인
-
----
-
-## 4. 🎯 [응용 패키지] 타겟 마커 선별 및 포즈 안정화 (`rby1_apriltag`)
-
-기본 `cuAprilTag` 노드는 시야 내 모든 마커를 검출하고 NVIDIA 독자 메시지(`/tag_detections`)를 발행합니다. 하지만 실제 RBY1 로봇 작업(도킹, 특정 작업대 정렬 등)에서는 **내가 지정한 특정 마커만 선별**해야 하며, 원거리에서 발생하는 **마커 좌표 흔들림(Jitter)을 제거**해야 합니다.
-
-이를 위해 본 워크스페이스에 응용 패키지 **`rby1_apriltag`**가 구현되어 있습니다.
-
----
-
-### 4.1. 마커 지터(Jitter) 발생 원인 및 안정화 원리
-
-마커 기반 트래킹에서 카메라와 마커의 거리가 멀어질수록($Z \ge 0.5\text{m}$) X, Y 좌표가 심하게 튀는 현상이 발생합니다.
-
-* **원인 (Matrix Inversion Amplification)**:
-  * 마커 좌표계를 로봇 베이스 좌표계 등으로 역변환($T^{-1}$)할 때, 역변환 행렬의 위치 성분은 $-R^T t$가 됩니다.
-  * 회전각의 미세한 노이즈(0.5° 미만)가 큰 깊이($Z$) 벡터와 곱해지면서 **X, Y 방향의 수평 오차가 수 센티미터 단위로 증폭**됩니다.
-  * 역변환된 행렬들을 평균화하면 이미 왜곡된 값이 섞여 지터가 더 악화됩니다.
-* **해결 원리 (Average Before Inversion)**:
-  1. **순방향 행렬 수집**: 카메라 기준 마커 변환 행렬($^{Camera}T_{Marker}$) 상태에서 슬라이딩 윈도우 버퍼에 수집합니다.
-  2. **Robust Median Translation**: 위치($X, Y, Z$) 성분은 이상치에 강인한 **중앙값(Median)**으로 필터링합니다.
-  3. **SVD 직교 회전 평균화**: 회전 행렬 합산치에 특이값 분해(SVD)를 적용하여 직교 회전 행렬($R_{avg} = U V^T$)을 산출합니다.
-  4. 이를 통해 각도 노이즈가 $Z$ 깊이에 곱해져 증폭되기 전에 완벽히 스무딩됩니다.
-
----
-
-### 4.2. `rby1_apriltag` 패키지 구성 및 설정 파일
-
-* **패키지 위치**: `src/rby1_isaac_ros/rby1_apriltag`
-* **설정 파일 (`config/target_tags.yaml`)**:
-
-```yaml
-target_tag_filter:
-  ros__parameters:
-    target_ids: [7]                      # 추적할 마커 ID 화이트리스트 (복수 ID 지정 가능: [7, 0, 12])
-    input_topic: "/tag_detections"        # Isaac ROS cuAprilTag 원본 토픽
-    output_pose_topic: "/target_marker/pose" # 표준 ROS 2 PoseStamped 토픽
-    broadcast_tf: true                    # 필터링된 마커 TF 브로드캐스트 활성화
-    target_frame_prefix: "target_marker"  # TF child_frame 접두사 (예: target_marker_7)
-    filter_jitter: true                   # 순방향 행렬 Median+SVD 포즈 안정화 적용
-    window_size: 5                        # 평활화 슬라이딩 윈도우 크기 (프레임)
-    publish_per_tag_topics: true          # /target_marker_<id>/pose 토픽 개별 발행 여부
-```
-
----
-
-### 4.3. 빌드 및 실행 매뉴얼
-
-#### Step 1. 패키지 빌드 (컨테이너 내부)
-```bash
-# 도커 컨테이너 내부 터미널
 cd /workspaces/isaac_ros-dev
-colcon build --symlink-install --packages-select rby1_apriltag
-source install/setup.bash
+colcon build --symlink-install --base-paths src/rby1_isaac_ros/rby1_apriltag --packages-select rby1_apriltag
 ```
 
-#### Step 2. Isaac ROS + 타겟 필터 노드 실행
-* **터미널 1 (Isaac ROS AprilTag 파이프라인)**:
-  ```bash
-  source /opt/ros/humble/setup.bash
-  source /workspaces/isaac_ros-dev/install/setup.bash
-  ros2 launch isaac_ros_apriltag isaac_ros_apriltag_realsense.launch.py
-  ```
+이후 컨테이너에 들어올 때마다 자동으로 source됩니다.
 
-* **터미널 2 (타겟 마커 선별 & 포즈 안정화 노드)**:
-  ```bash
-  # 컨테이너에 추가 터미널로 접속
-  isaac-ros
-
-  # 타겟 필터 노드 실행 (기본 7번 태그 추적)
-  source /opt/ros/humble/setup.bash
-  source /workspaces/isaac_ros-dev/install/setup.bash
-  ros2 launch rby1_apriltag target_tag_filter.launch.py
-  ```
+`--symlink-install`로 빌드해야 `config/target_tags.yaml`을 고친 것이 **런치를 다시 띄우는 것만으로** 적용됩니다(없이 빌드하면
+설치 폴더에 복사본이 남아, 고친 뒤 다시 빌드해야 합니다). 예전에 이 옵션 없이 빌드했다면 먼저
+`rm -rf build/rby1_apriltag install/rby1_apriltag`를 합니다.
 
 ---
 
-## 5. 🌐 도커 외부(호스트 PC / 로봇 제어기) 통신 및 연동 가이드
+## 3. 실행 (매번)
 
-많은 사용자가 **"도커 밖에서 토픽을 받으려면 호스트 환경에 무엇을 추가로 설치해야 하는가?"**에 대해 혼란을 겪습니다. 아래 가이드를 통해 호스트 환경 구성을 정확히 이해할 수 있습니다.
+| 터미널 | 위치 | 하는 일 |
+|---|---|---|
+| 1 | 호스트 | 드라이버 (로봇을 움직일 때. 시뮬레이터면 [tutorial_cumotion.md 3.1](tutorial_cumotion.md#31-시뮬레이터--터미널-1)도) |
+| 2 | 호스트 | 카메라 |
+| 3 | 컨테이너 | 마커 검출 |
+| 4 | 호스트 | 확인, 마커 예제 |
 
-### 5.1. ROS 2 DDS 네트워크 통신 환경
+호스트 터미널에서는 먼저 `source ~/ros2_driver_ws/install/setup.bash`를 합니다.
 
-Isaac ROS 컨테이너는 호스트와 동일한 네트워크 스택(`--net=host`) 및 공유 메모리(`--ipc=host`)를 공유하므로 별도의 포트 포워딩 없이 호스트와 ROS 2 통신이 직결됩니다.
+### 3.1. 카메라 — 터미널 2
 
-* **필수 일치 항목**:
-  1. `ROS_DOMAIN_ID`: 도커 내부와 호스트 터미널의 `ROS_DOMAIN_ID`가 동일해야 합니다 (기본값: `0`).
-     ```bash
-     echo $ROS_DOMAIN_ID  # 호스트와 컨테이너 둘 다 확인
-     ```
-  2. `RMW_IMPLEMENTATION`: 기본적으로 둘 다 `rmw_fastrtps_cpp`로 설정되어 있으므로 별도 변경 없이 호환됩니다.
-  3. `ROS_LOCALHOST_ONLY`: 외부 장비와 통신하지 않는 한 기본값(해제 상태)을 유지합니다.
-
----
-
-### 5.2. 토픽별 의존성 및 호스트 설치 요구사항 비교
-
-| 토픽 및 데이터 | 메시지 타입 | 호스트 PC 추가 설치 필요 여부 | 설명 |
-| :--- | :--- | :--- | :--- |
-| **`/target_marker/pose`**<br/>(권장) | `geometry_msgs/msg/PoseStamped` | **설치 필요 없음 (0개)** | ROS 2 기본 표준 인터페이스이므로 호스트의 Python, C++, RBY1 제어 노드가 기본 환경에서 즉시 구독 가능합니다. |
-| **`/tf` (`target_marker_7`)**<br/>(권장) | `tf2_msgs/msg/TFMessage` | **설치 필요 없음 (0개)** | ROS 2 표준 TF 라이브러리(`tf2_ros`)로 `camera` $\rightarrow$ `target_marker_7` 좌표를 즉시 변환 및 조회 가능합니다. |
-| **`/tag_detections`**<br/>(Isaac ROS 원본) | `isaac_ros_apriltag_interfaces/<br/>AprilTagDetectionArray` | ⚠️ **인터페이스 패키지 필요** | NVIDIA 독자 규격이므로 호스트에서 직접 구독하려면 호스트 워크스페이스에 `isaac_ros_apriltag_interfaces`가 빌드되어 있어야 합니다. |
-
-> **💡 설계 권장 사항 (Best Practice)**:  
-> 도커 외부(호스트 PC, RBY1 로봇 SDK, 내비게이션 노드 등)에서는 독자 규격인 `/tag_detections` 대신, `rby1_apriltag`가 정제하여 발행하는 **표준 토픽 `/target_marker/pose`** 및 **`/tf`**를 구독하는 것이 가장 안정적이며 호스트 환경의 의존성을 완벽하게 제로(Zero)로 유지할 수 있습니다.
-
----
-
-### 5.3. 호스트 환경 파이썬 구독 및 로봇 연동 예제 (추가 설치 0개)
-
-도커 외부 호스트 PC 터미널에서 실행되는 순수 ROS 2 파이썬 스크립트 예제입니다. Isaac ROS 패키지를 전혀 참조하지 않고 오직 표준 `geometry_msgs`와 `tf2_ros`만으로 동작합니다.
-
-```python
-#!/usr/bin/env python3
-# host_target_listener.py
-# 실행 위치: 도커 진입 불필요! 호스트 일반 터미널에서 바로 실행 가능!
-import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped
-import tf2_ros
-
-class HostTargetListener(Node):
-    def __init__(self):
-        super().__init__('host_target_listener')
-        
-        # 1. 표준 PoseStamped 구독
-        self.sub_pose = self.create_subscription(
-            PoseStamped,
-            '/target_marker/pose',
-            self.pose_callback,
-            10
-        )
-        
-        # 2. TF 버퍼 리스너 (원하는 기준 프레임으로 좌표 조회 가능)
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        
-        self.get_logger().info("호스트 타겟 마커 리스너 시작됨 (/target_marker/pose 대기 중)...")
-
-    def pose_callback(self, msg: PoseStamped):
-        pos = msg.pose.position
-        ori = msg.pose.orientation
-        self.get_logger().info(
-            f"🎯 [마커 감지] 위치: X={pos.x:.3f}m, Y={pos.y:.3f}m, Z={pos.z:.3f}m | "
-            f"자세: Qx={ori.x:.3f}, Qy={ori.y:.3f}, Qz={ori.z:.3f}, Qw={ori.w:.3f}"
-        )
-
-def main():
-    rclpy.init()
-    node = HostTargetListener()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
+```bash
+ros2 launch rby1_additional_tools camera.launch.py                          # 웹캠 /dev/video0, 1280×720
+ros2 launch rby1_additional_tools camera.launch.py source:=/dev/video2      # 다른 웹캠
+ros2 launch rby1_additional_tools camera.launch.py camera:=realsense        # RealSense (컬러만)
+ros2 launch rby1_additional_tools camera.launch.py camera:=file source:=/경로/tag.png   # 카메라 없이 이미지로
 ```
 
-* **호스트 터미널 실행 방법**:
-  ```bash
-  source /opt/ros/humble/setup.bash
-  python3 host_target_listener.py
-  ```
+설정(해상도, fps, 노출, 토픽, RealSense의 깊이·적외선 켜기)은 `rby1_additional_tools/config/webcam.yaml`,
+`config/realsense.yaml`에 있습니다. 고친 파일은 `config:=/경로/my.yaml`로 씁니다.
+
+보정값(내부 파라미터)이 있으면 붙입니다. camera_ws의 `camera_intrinsics_*.yaml`을 그대로 쓸 수 있습니다:
+
+```bash
+ros2 launch rby1_additional_tools camera.launch.py camera:=realsense intrinsics:=/경로/camera_intrinsics_d435.yaml
+```
+
+없으면 RealSense는 공장 보정값을, 웹캠은 화각(`horizontal_fov`)으로 만든 근사 모델을 씁니다(마커 거리가 대략값).
+카메라가 머리에 붙은 위치는 `rby1_additional_tools/config/camera_mount.yaml`(기본: `link_head_2`에서 앞 22 mm, 위 40 mm)입니다.
+다르면 재서 고칩니다. 설정 전체는 드라이버 저장소 README의 **Additional Tools**에 있습니다.
+
+> 카메라나 보정값을 바꾸면 3.2(마커 검출)도 다시 켭니다. 컨테이너의 보정 노드가 처음 받은 카메라 모델을 계속 씁니다.
+
+### 3.2. 마커 검출 — 터미널 3 (컨테이너)
+
+```bash
+isaac-ros
+ros2 launch rby1_apriltag apriltag.launch.py
+ros2 launch rby1_apriltag apriltag.launch.py ids:=7,12 size:=0.08      # 마커 번호·크기를 이번만 바꿔서
+```
+
+마커 설정은 `rby1_apriltag/config/target_tags.yaml`에 있습니다(6. 설정). **먼저 `size`를 인쇄한 마커에 맞춥니다.**
+
+- `size`: 마커 검은 사각형 한 변(m, 기본 `0.10`). 마커의 3차원 자세는 이 크기와 카메라 보정값으로 영상 한 장에서
+  계산합니다(깊이 영상은 쓰지 않습니다). 그래서 틀리면 거리가 그 비율만큼 틀립니다.
+- `target_ids`: 찾을 마커 번호(기본 `[7]`).
+- 런치 인자 `size:=`, `tag_family:=`, `ids:=`(쉼표로 구분)를 주면 그 실행에서만 설정 파일 값을 덮어씁니다.
+- 설정 파일을 고쳤으면 이 런치를 **다시 띄워야** 적용됩니다. 시작할 때 나오는 `markers: …` 줄에서 실제로 쓰는 크기·번호와
+  읽은 파일을 확인합니다.
+- 카메라 해상도가 1280×720이 아니면 `width:=… height:=…`로 맞춥니다.
+
+아래가 나오면 됩니다:
+
+```
+markers: tag36h11, black square 0.1 m, target ids [7] (settings: …/rby1_apriltag/config/target_tags.yaml)
+[target_tag_filter] target ids [7] from /tag_detections; smoothing over 5 frames
+```
+
+
+### 3.3. 확인 — 터미널 4
+
+마커를 카메라 앞에 둡니다.
+
+```bash
+ros2 topic echo /target_marker/pose --once        # frame_id: camera_optical_frame, position.z = 카메라에서 거리(m)
+ros2 topic hz /target_marker/pose                 # 카메라 fps 정도
+ros2 run tf2_ros tf2_echo link_head_2 target_marker_7
+```
+
+**화면으로 보기 (RViz)** — 카메라를 켤 때(3.1) `rviz:=true`를 붙이면 RViz가 같이 뜹니다.
+
+```bash
+ros2 launch rby1_additional_tools camera.launch.py rviz:=true                    # 웹캠
+ros2 launch rby1_additional_tools camera.launch.py camera:=realsense rviz:=true  # RealSense
+```
+
+| RViz 창 | 보이는 것 |
+|---|---|
+| Camera image | 카메라 영상(`/camera/image_raw`) |
+| Marker view | 같은 영상 위에 좌표축을 겹쳐 그림 — 마커를 찾으면 **마커 위에 축**(`target_marker_<id>`)이 얹힙니다 |
+| 3D 화면 | 카메라(`camera_link`)와 마커의 위치 관계. `tag36h11:<id>`는 찾은 모든 마커, `target_marker_<id>`는 대상 마커 |
+
+마커 검출(3.2)을 켜기 전에는 영상만 보이고, 켜고 나면 축이 나타납니다. 이미 떠 있는 RViz에서 보려면 **Add → By topic →
+`/camera/image_raw` → Image**를 추가합니다(Reliability는 Reliable). 영상만 볼 때는 `ros2 run rqt_image_view rqt_image_view`도 됩니다.
 
 ---
 
-## 6. 🛠️ 트러블슈팅 및 튜닝 체크리스트
+### 3.4. 마커로 로봇 움직이기 — 터미널 4
 
-| 증상 / 이슈 | 점검 및 해결 방법 |
-| :--- | :--- |
-| **마커 크기(Z축 거리) 오차** | 마커의 한 변 길이를 자로 정밀 측정하여 `apriltag_node`의 `size` 파라미터(단위: 미터)와 반드시 일치시키십시오. (예: 80mm $\rightarrow$ `0.08`) |
-| **도커 외부에서 토픽이 안 보임** | 1. 호스트와 컨테이너 둘 다 `echo $ROS_DOMAIN_ID`를 확인하여 번호가 같은지 확인합니다.<br/>2. 방화벽(`ufw`)이 DDS 멀티캐스트 UDP 트래픽을 차단하고 있는지 확인합니다 (`sudo ufw status`). |
-| **호스트에서 `ros2 topic echo /tag_detections` 시 에러** | `/tag_detections`는 NVIDIA 독자 규격 메시지입니다. 호스트에서는 표준 토픽인 `ros2 topic echo /target_marker/pose` 또는 `ros2 run tf2_ros tf2_echo ...`를 사용하십시오. |
-| **원거리 마커 떨림 (Jitter)** | `rby1_apriltag`의 `config/target_tags.yaml`에서 `filter_jitter: true`를 유지하고 필요 시 `window_size`를 `5`에서 `8`~`10`으로 상향하십시오. |
-| **카메라 프레임 레이트 저하** | RealSense 드라이버 설정에서 `enable_depth: False`, `enable_infra1: False`, `enable_infra2: False`로 설정하여 USB 3.0 대역폭을 오직 RGB 스트림에만 집중시키십시오. |
+드라이버(터미널 1)가 떠 있고 로봇 전원·서보가 켜져 있어야 합니다(`ros2 run rby1_examples 06_zero_pose`로 켤 수 있음).
+
+| 예제 (드라이버 저장소 `rby1_examples`) | 하는 일 | 더 필요한 것 |
+|---|---|---|
+| `22_marker_tracking --ros-args -p follow:=head` | 머리가 돌아 마커를 화면 가운데에 둠 | 없음 |
+| `22_marker_tracking` | 손이 마커를 따라감 (`follow:=both`면 머리도) | cuMotion 기동 |
+| `23_marker_shuttle` | 손이 두 마커의 10 cm 아래 지점을 오감, 장애물이 있으면 피해서 | cuMotion 기동, 마커 두 개(`ids:=7,12`) |
+
+머리만 따라가게 하는 것은 여기서 바로 됩니다:
+
+```bash
+ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head
+```
+
+```
+head: following /target_marker_7/pose in link_head_2 at 20 Hz (gain 0.60, max 0.80 rad/s)
+head: marker found 0.36 m away: tracking
+```
+
+마커를 움직이면 머리가 따라 돌아 마커를 화면 가운데에 둡니다. 마커를 치우면 `marker lost: holding the head`로 멈췄다가
+3초 뒤 `going home`으로 정면을 봅니다.
+
+손을 움직이는 두 예제의 순서와 파라미터는 [tutorial_cumotion.md 4.7](tutorial_cumotion.md#47-카메라가-본-마커로-움직이기-예제-22-23)에
+있습니다.
+
+> cuMotion이나 MoveIt 실행기로 팔을 움직이는 동안에도 머리는 계속 따라갑니다(드라이버가 머리에 스트림을 따로 둠).
+
+---
+
+## 4. 내 프로그램에서 마커 쓰기
+
+같은 ROS 도메인의 어떤 노드든 아래를 쓰면 됩니다. Isaac ROS 패키지는 필요 없습니다.
+
+| 이름 | 타입 | 내용 |
+|---|---|---|
+| `/target_marker/pose` | `geometry_msgs/PoseStamped` | 대상 마커 자세, `camera_optical_frame` 기준 (z 앞, x 오른쪽, y 아래) |
+| `/target_marker_<id>/pose` | `geometry_msgs/PoseStamped` | 마커 번호별 |
+| TF `camera_optical_frame → target_marker_<id>` | | 로봇 TF가 발행되고 있으면 `base → target_marker_<id>`로 바로 조회 |
+| `/camera/image_raw` | `sensor_msgs/Image` (`bgr8`) | 카메라 영상 (호스트의 카메라 노드, reliable) |
+| `/camera/camera_info` | `sensor_msgs/CameraInfo` | 카메라 모델(내부 파라미터·왜곡) |
+| `/image_rect`, `/camera_info_rect` | `sensor_msgs/Image` (`bgr8`), `sensor_msgs/CameraInfo` | 왜곡을 편 영상과 그 모델 (컨테이너의 보정 노드) |
+| `/tag_detections` | `isaac_ros_apriltag_interfaces/AprilTagDetectionArray` | 찾은 모든 마커(번호, 꼭짓점 화소, 자세). 이 메시지 타입은 컨테이너에만 있어 호스트에서는 `echo`가 안 됩니다 |
+| TF `camera_optical_frame → tag36h11:<id>` | | 찾은 모든 마커 (Isaac 노드가 발행, 안정화 전) |
+
+RealSense에서 깊이·적외선을 켜면(`config/realsense.yaml`) `/camera/depth/image_raw`(`16UC1`, mm), `/camera/ir_left/image_raw`·
+`/camera/ir_right/image_raw`(`mono8`)와 각각의 `camera_info`가 더 나옵니다. 마커 검출에는 쓰지 않습니다.
+
+로봇 기준(`base`) 좌표는 로봇 TF가 있어야 나옵니다. cuMotion 기동이나 MoveIt 실행기 런치가 발행합니다.
+
+```bash
+ros2 run tf2_ros tf2_echo base target_marker_7
+```
+
+---
+
+## 5. 종료
+
+터미널 4(예제) → 3(마커 검출) → 2(카메라) → 1(드라이버) 순서로 Ctrl+C.
+
+---
+
+## 6. 설정
+
+| 파일 | 주요 설정 | 기본값 |
+|---|---|---|
+| `rby1_apriltag/config/target_tags.yaml` | `size` — 마커 검은 사각형 한 변 (m). 쓰는 마커 모두 같은 크기 | `0.10` |
+| | `tag_family` — 마커 패밀리 | `tag36h11` |
+| | `target_ids` — 찾을 마커 번호 | `[7]` (`[7, 12]`처럼 여러 개) |
+| | `filter_jitter`, `window_size` — 최근 몇 프레임으로 떨림을 줄일지 | `true`, `5` |
+| | `broadcast_tf`, `target_frame_prefix` | `true`, `target_marker` |
+| `apriltag.launch.py` 인자 | `width`, `height`, `image`, `camera_info`, `config` | `1280`, `720`, `/camera/image_raw`, `/camera/camera_info`, 위 설정 파일 |
+| | `size`, `tag_family`, `ids` — 주면 설정 파일 값을 덮어씀 | 비어 있음(설정 파일 값) |
+| `camera.launch.py` 인자 | `camera`, `source`, `config`, `intrinsics`, `mount`, `rviz` | `webcam`, 설정 파일 값, …, `false` |
+| `rby1_additional_tools/config/webcam.yaml`, `config/realsense.yaml` | 해상도, fps, 노출, 토픽, RealSense 스트림(`use_rgb` `use_depth` `use_ir_left` `use_ir_right`), 보정 파일(`use_custom_intrinsics`, `intrinsics_file`) | 드라이버 저장소 README **Additional Tools** |
+| `22_marker_tracking`, `23_marker_shuttle` 파라미터 (`--ros-args -p 이름:=값`) | 따라갈 마커, 손 오프셋, 머리 속도 등 | [tutorial_cumotion.md 4.7](tutorial_cumotion.md#47-카메라가-본-마커로-움직이기-예제-22-23), 예제 파일 맨 위 |
+
+```bash
+ros2 launch rby1_apriltag apriltag.launch.py config:=/경로/my_tags.yaml
+ros2 launch rby1_additional_tools camera.launch.py camera:=realsense config:=/경로/my_realsense.yaml
+ros2 run rby1_examples 22_marker_tracking --ros-args -p follow:=head -p head.gain:=0.4 -p head.max_speed:=0.5
+```
+
+---
+
+## 참고
+
+- [developer_manual.md](developer_manual.md#apriltag) — 파이프라인 구조, 안정화 방법, 마커 예제의 제어, 테스트, [트러블슈팅](developer_manual.md#12-트러블슈팅)
+- 드라이버 저장소 README (`~/ros2_driver_ws/src/rby1_ros2/README.md`) — **Additional Tools**(카메라, 마커 예제)
+- [tutorial_cumotion.md](tutorial_cumotion.md) — 이미지, 컨테이너, 시뮬레이터, 마커로 손 움직이기(§4.7)
+- [Isaac ROS AprilTag (release-3.2)](https://nvidia-isaac-ros.github.io/v/release-3.2/repositories_and_packages/isaac_ros_apriltag/index.html)
