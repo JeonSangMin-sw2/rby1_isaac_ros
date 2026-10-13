@@ -17,6 +17,8 @@
 
 ## 2. NVIDIA 그래픽 드라이버 설정
 
+> ℹ️ **Jetson은 이 장을 건너뜁니다.** 드라이버는 JetPack에 들어 있습니다. Jetson에서 달라지는 곳은 [9장](#9-jetson-orin-jetpack-6x-특이사항)에 모았습니다.
+
 ### 2.1. 현재 설치된 드라이버 확인
 이미 NVIDIA 드라이버가 설치되어 있다면 먼저 정상 동작 여부를 확인합니다:
 ```bash
@@ -63,6 +65,9 @@ sudo reboot
 
 컨테이너 내부에서 GPU 가속을 활용하기 위해 툴킷과 런타임을 구성합니다.
 
+> ℹ️ **Jetson**: JetPack을 `nvidia-container` 패키지까지 설치했으면 Docker와 툴킷이 이미 있습니다. 아래에서 `git git-lfs` 설치와
+> `usermod`·`newgrp` 두 줄만 하고, 나머지는 [9장](#9-jetson-orin-jetpack-6x-특이사항)의 CDI 설정으로 넘어갑니다.
+
 ```bash
 # 1. Docker 기본 설치 (이미 설치된 경우 생략)
 sudo apt update
@@ -92,7 +97,9 @@ Ubuntu 22.04는 기본 apt 저장소에 최신 `docker-buildx`가 포함되어 �
 
 ```bash
 mkdir -p ~/.docker/cli-plugins
-curl -sSL https://github.com/docker/buildx/releases/download/v0.14.1/buildx-v0.14.1.linux-amd64 -o ~/.docker/cli-plugins/docker-buildx
+# PC(x86_64)는 amd64, Jetson(aarch64)은 arm64 파일을 받습니다
+ARCH=$([ "$(uname -m)" = "aarch64" ] && echo arm64 || echo amd64)
+curl -sSL https://github.com/docker/buildx/releases/download/v0.14.1/buildx-v0.14.1.linux-${ARCH} -o ~/.docker/cli-plugins/docker-buildx
 chmod +x ~/.docker/cli-plugins/docker-buildx
 
 # 설치 확인 (v0.14+ 버전 출력 확인)
@@ -188,7 +195,8 @@ cat << 'EOF' >> ~/.bashrc
 # Isaac ROS CLI Helper
 isaac-ros() {
     local target_ws="${HOME}/isaac_ros_ws"
-    local container_name="isaac_ros_dev-x86_64-container"
+    # x86_64 on a PC, aarch64 on a Jetson: run_dev.sh names the container after it.
+    local container_name="isaac_ros_dev-$(uname -m)-container"
 
     if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
         echo "Attaching to running container: ${container_name}..."
@@ -223,16 +231,45 @@ isaac-ros
 ## 9. Jetson Orin (JetPack 6.x) 특이사항
 
 Jetson Orin 환경의 경우 JetPack이 드라이버와 CUDA를 기본 제공하므로:
-1. Docker 데몬 설정 확인:
-   ```bash
-   cat /etc/docker/daemon.json
-   # "default-runtime": "nvidia" 항목 존재 확인
-   ```
-2. 디바이스 마운트 인자 생성:
-   ```bash
-   echo "-v /dev:/dev" > ~/.isaac_ros_dev-dockerargs
-   ```
-3. 동일하게 `isaac-ros` 단축 커맨드로 실행하면 `aarch64` 전용 컨테이너로 자동 진입합니다.
+> ⚠️ **Jetson에서 실제로 해 본 절차가 아닙니다.** 이 문서의 2~8장은 x86 PC에서 쓴 것이고, 아래는 Jetson에서 달라지는 곳을
+> 스크립트와 Dockerfile을 읽어 정리한 것입니다.
+
+**이 문서를 Jetson에서 따라 할 때**
+
+| 장 | Jetson에서 |
+|---|---|
+| 2. NVIDIA 그래픽 드라이버 | **건너뜁니다.** JetPack에 들어 있습니다 |
+| 3. Docker, NVIDIA Container Toolkit | JetPack에 Docker와 NVIDIA 컨테이너 런타임이 들어 있으면 설치 줄은 건너뛰고, 사용자를 `docker` 그룹에 넣는 줄과 `git-lfs` 설치만 합니다. 그리고 **아래 CDI 설정을 추가로 합니다** |
+| 4. Docker Buildx | 합니다 (명령이 arm64 파일을 받습니다) |
+| 5. 디바이스 마운트 | 합니다 |
+| 6. `isaac_ros_common` 클론 | 합니다 |
+| 7. Dockerfile 사전 패치 | **하지 않습니다** (x86 전용) |
+| 8. 컨테이너 빌드, `isaac-ros` | 합니다. 컨테이너 이름은 `isaac_ros_dev-aarch64-container`가 됩니다 |
+
+**CDI 설정 (Jetson만)** — `run_dev.sh`가 Jetson에서는 GPU를 `nvidia.com/gpu=all,nvidia.com/pva=all`이라는 이름으로 요청합니다.
+이 이름은 CDI 설정 파일이 있어야 풀리므로, 없으면 컨테이너가 뜨지 않습니다.
+
+```bash
+cat /etc/docker/daemon.json                                           # "default-runtime": "nvidia" 가 있어야 합니다
+sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
+sudo systemctl restart docker
+
+# PVA 허용 목록 패키지
+sudo apt-get install -y software-properties-common
+sudo apt-key adv --fetch-key https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
+sudo add-apt-repository 'deb https://repo.download.nvidia.com/jetson/common r36.4 main'
+sudo apt-get update
+sudo apt-get install -y pva-allow-2
+```
+
+명령의 출처는 NVIDIA의 [Jetson Setup for VPI](https://nvidia-isaac-ros.github.io/v/release-3.2/getting_started/hardware_setup/compute/jetson_vpi.html)입니다
+(2026-10-13에 대조). 저장소 주소의 `r36.4`는 JetPack 6.1·6.2 기준이므로, 다른 JetPack이면 그 문서를 다시 봅니다.
+
+**JetPack 버전** — NVIDIA 문서가 `release-3.2`에 적은 지원 버전은 **JetPack 6.1과 6.2**뿐입니다(`cat /etc/nv_tegra_release`에
+`R36`, `REVISION: 4.x`). 그보다 새 JetPack에서 되는지는 확인된 바가 없습니다.
+
+**시뮬레이터** — 로봇 시뮬레이터 이미지는 x86 전용이라 Jetson에서는 뜨지 않습니다. Jetson에서는 실제 로봇에 붙거나, 같은 네트워크의
+PC에서 시뮬레이터를 켜고 드라이버의 `robot_ip`를 그 PC 주소로 둡니다.
 
 ### 9.1. Jetson에서 이 저장소를 빌드할 때 (cuMotion, AprilTag)
 
@@ -243,16 +280,20 @@ Jetson Orin 환경의 경우 JetPack이 드라이버와 CUDA를 기본 제공하
 
 | 항목 | x86_64 PC | Jetson Orin |
 |---|---|---|
-| 컨테이너 이름 | `isaac_ros_dev-x86_64-container` | `isaac_ros_dev-aarch64-container` — 문서의 `docker exec`·`docker stop` 명령과 §8의 `isaac-ros` 함수에서 이름을 바꿉니다 |
+| 컨테이너 이름 | `isaac_ros_dev-x86_64-container` | `isaac_ros_dev-aarch64-container` — 문서의 `docker exec`·`docker stop` 명령에서 이름을 바꿉니다(`isaac-ros` 함수는 알아서 고릅니다) |
 | §7의 Dockerfile 패치 | 필요 | **하지 않습니다** |
+| 이미지 빌드 파일 | `docker/Dockerfile.cumotion` | **같은 파일.** `run_dev.sh`가 넘기는 `PLATFORM`(amd64·arm64)을 보고 아래 줄만 달라집니다 |
+| 바탕 이미지 | `tritonserver:24.08-py3` | `12.6.11-devel-aarch64-ubuntu22.04` (NVIDIA의 `Dockerfile.base`가 고릅니다) |
+| torch | 빌드 시점의 최신(버전 고정 없음) | `2.5.0a0 … nv24.08` (JetPack 6.1용으로 고정) |
+| NVIDIA apt 패키지 | cuRobo 3.2.5, cuMotion 3.2.7, AprilTag 3.2.5, image_proc 3.2.10 | **같은 버전**(2026-10-13에 저장소 목록 대조) |
+| `docker/patches/`의 패치 3개 | 적용 | **그대로 적용됩니다.** 고치는 파일 4개가 x86 패키지와 바이트 단위로 같습니다 |
 | cuRobo 커널을 컴파일하는 GPU 세대 | `9.0+PTX` (RTX 50 우회) | `8.7` — `docker/Dockerfile.cumotion`이 플랫폼을 보고 고릅니다. 손댈 것 없음 |
 | MoveIt (호스트) | `sudo apt install ros-humble-moveit` | 같음. 소스 빌드는 필요 없습니다 |
 | 계획·추적 시간 | 문서의 수치(RTX 5070) | **다시 재야 합니다.** 느리면 `config/cumotion.yaml`의 `avoid`·`planner` 값을 조정 |
 
 **순서**
 
-1. JetPack 버전 확인: `cat /etc/nv_tegra_release`. Isaac ROS `release-3.2`가 지원하는 JetPack 6.x인지 NVIDIA 문서에서 확인합니다
-   (이 저장소는 6.1·6.2 기준으로 썼습니다).
+1. JetPack 버전 확인: `cat /etc/nv_tegra_release`. NVIDIA가 `release-3.2`에 적은 지원 버전은 JetPack 6.1·6.2입니다(위 9장).
 2. 저장 공간: 이미지가 약 40 GB입니다. NVMe SSD에 Docker 데이터가 있어야 합니다.
 3. 호스트에 ROS 2 Humble, 드라이버 워크스페이스(`~/ros2_driver_ws`), SDK(`~/sdk/rby1-sdk`)를 준비합니다(드라이버 저장소 README).
 4. 모델 파일 준비 — 둘 중 하나:
@@ -276,8 +317,8 @@ ros2 run rby1_cumotion check_plan                            # 계획 1회, 로�
 ros2 run rby1_cumotion replan_benchmark --runs 10            # 재계획 시간 — 로봇·ROS 없이
 ```
 
-- 이미지 빌드가 `curobo_compat.py … expected one occurrence to patch`로 멈추면 Jetson 이미지의 cuRobo·torch 버전이 x86과 다른
-  것입니다. 그 메시지가 가리키는 파일을 보고 패치를 맞춥니다.
+- 이미지 빌드가 `… expected one occurrence to patch`로 멈추면 NVIDIA가 apt 패키지를 새 버전으로 바꾼 것입니다(x86에서도 똑같이
+  멈춥니다). 그 메시지가 가리키는 파일을 보고 패치를 맞춥니다.
 - `no kernel image is available for execution on the device`가 나오면 커널이 다른 GPU 세대로 컴파일된 것입니다. 위 첫 줄을 확인합니다.
 - 첫 계획이 5초 안에 안 끝나면 MoveIt 플러그인이 포기합니다(x86에서도 13관절 그룹은 첫 계획이 9.4초였습니다). 런치의 워밍업이
   끝난 뒤 다시 보냅니다.

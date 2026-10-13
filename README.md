@@ -179,6 +179,8 @@ ros2 launch rby1_apriltag marker_target.launch.py ids:=7,8                    # 
 
 ## 4. 🛠️ 컨테이너 세션 관리 치트시트
 
+> ℹ️ Jetson에서는 아래 명령과 다른 문서의 `x86_64`를 `aarch64`로 바꿉니다(`isaac_ros_dev-aarch64-container`).
+
 * **멀티 터미널 추가 접속 (호스트 터미널에서 실행)**:
   컨테이너가 실행 중인 상태에서 새 터미널 창을 열고 `isaac-ros`를 입력하면 자동으로 실행 중인 컨테이너에 attach됩니다:
   ```bash
