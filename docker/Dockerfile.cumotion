@@ -5,7 +5,21 @@
 #   cp docker/isaac_ros_common-config ~/.isaac_ros_common-config
 # and build the usual way with isaac_ros_common/scripts/run_dev.sh.
 ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+# amd64 or arm64: isaac_ros_common's build_image_layers.sh passes it to every layer.
+ARG PLATFORM=amd64
+
+# The GPU architectures cuRobo's kernels are compiled for, by platform (the stage named
+# after the platform is the one the image is built from).
+#   amd64: release-3.2 ships CUDA 12.6, whose nvcc stops at compute_90, while Blackwell
+#          (RTX 50xx) is compute_120. Emit PTX and let the driver finish it at load time.
+#          Drop this once the toolkit in the base image reaches 12.8 or newer.
+#   arm64: Jetson Orin is compute_87. PTX made for compute_90 does not load on it.
+FROM ${BASE_IMAGE} AS cuda_amd64
+ENV TORCH_CUDA_ARCH_LIST=9.0+PTX
+FROM ${BASE_IMAGE} AS cuda_arm64
+ENV TORCH_CUDA_ARCH_LIST=8.7
+
+FROM cuda_${PLATFORM}
 
 USER root
 
@@ -16,10 +30,6 @@ ENV CUDA_HOME=/usr/local/cuda \
     TRITON_CACHE_DIR=/opt/rby1/triton \
     XDG_CACHE_HOME=/opt/rby1/xdg \
     RBY1_BUNDLES=/opt/rby1/bundles
-# release-3.2 ships CUDA 12.6, whose nvcc stops at compute_90, while Blackwell
-# (RTX 50xx) is compute_120. Emit PTX and let the driver finish it at load time.
-# Drop this once the toolkit in the base image reaches 12.8 or newer.
-ENV TORCH_CUDA_ARCH_LIST=9.0+PTX
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-isaac-ros-cumotion \

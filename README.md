@@ -53,7 +53,15 @@ git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pip
 
 ---
 
-### Step 2. 컨테이너 구동 및 세션 진입
+### Step 2. 이미지 준비, 컨테이너 구동 및 세션 진입
+
+이 저장소는 cuMotion·AprilTag·영상 보정을 이미지 레이어 하나(`docker/Dockerfile.cumotion`)로 넣습니다. **처음 한 번**, 컨테이너를
+켜기 전에 호스트에서 아래를 합니다. 그러면 다음 `isaac-ros`(= `run_dev.sh`)가 이미지를 만들고 들어갑니다(첫 빌드는 수십 분).
+
+```bash
+cd ~/isaac_ros_ws/src/rby1_isaac_ros/docker && ./make_bundles.sh              # 로봇 모델 파일 준비 (드라이버 워크스페이스가 빌드돼 있어야 함)
+cp ~/isaac_ros_ws/src/rby1_isaac_ros/docker/isaac_ros_common-config ~/.isaac_ros_common-config
+```
 
 `isaac_ros_common`은 실행 중인 하드웨어(x86 PC 또는 Jetson ARM64)를 자동으로 감지하여 최적의 GPU 가속 컨테이너를 구동합니다.
 
@@ -93,12 +101,17 @@ rosdep install --from-paths src --ignore-src -r -y
 ```bash
 # 컨테이너 내부에서 실행
 # 1. 이 저장소의 패키지만 빌드 (NVIDIA 패키지는 이미지에 apt로 들어 있음)
+#    rby1_cumotion, rby1_apriltag, rby1_isaac_ros_examples 가 한 번에 빌드됩니다
 colcon build --base-paths src/rby1_isaac_ros --symlink-install --cmake-args -DBUILD_TESTING=OFF
 
 # 2. 빌드 환경 반영 (오버레이 적용)
 source /opt/ros/humble/setup.bash             # Jazzy의 경우 /opt/ros/jazzy/setup.bash
 source /workspaces/isaac_ros-dev/install/setup.bash
 ```
+
+> 빌드는 여기서 한 번이면 됩니다. 이후 컨테이너에 들어올 때마다 자동으로 source되고, 튜토리얼에서는 빌드 명령을 다시 적지 않습니다.
+> `--symlink-install`로 빌드했으므로 설정 파일(`cumotion.yaml`, `target_tags.yaml`)과 런치 파일은 **소스를 고치면 다시 빌드하지 않아도**
+> 적용됩니다. C++ 소스(`rby1_apriltag`)를 고쳤을 때만 다시 빌드합니다.
 
 ---
 
@@ -121,6 +134,10 @@ source /workspaces/isaac_ros-dev/install/setup.bash
   * **`rby1_apriltag`**(C++): 대상 마커 선별, 중앙값+SVD 안정화, 표준 `PoseStamped`·TF 발행
   * 마커 좌표로 로봇 움직이기: `follow_head:=true`(머리가 마커를 따라감), `marker_target.launch.py`(마커를 팔 목표로 → 손이 마커로 감)
 
+* 🚀 **예제 런치 (`rby1_isaac_ros_examples`)**: 컨테이너에서 켜는 것을 용도별로 런치 하나에 묶은 것
+  * `cumotion_with_markers.launch.py` — cuMotion 기동 + 마커 검출. 호스트에서는 드라이버와 카메라만 띄우면 됨
+    ([docs/tutorial_cumotion.md 3.1](docs/tutorial_cumotion.md#31-카메라의-마커를-쓸-때))
+
 * 🧭 **[Visual SLAM (cuVSLAM 3D 오도메트리)](docs/tutorial_visual_slam.md)** *(작성 예정)*:
   * 스테레오 카메라 및 IMU 융합 GPU 가속 실시간 6-DoF 로봇 위치 추정
 
@@ -131,19 +148,12 @@ source /workspaces/isaac_ros-dev/install/setup.bash
 
 ### ⚡ cuMotion 빠른 시작 요약 (Quickstart)
 
-```bash
-# 설치 (처음 한 번)
-cd ~/isaac_ros_ws/src/rby1_isaac_ros/docker && ./make_bundles.sh              # 호스트: 모델 파일 준비
-cp ~/isaac_ros_ws/src/rby1_isaac_ros/docker/isaac_ros_common-config ~/.isaac_ros_common-config
-cd ~/isaac_ros_ws/src/isaac_ros_common/scripts && ./run_dev.sh -d ~/isaac_ros_ws   # 이미지 → 컨테이너
-colcon build --base-paths src/rby1_isaac_ros/rby1_cumotion \
-    --packages-select rby1_cumotion --symlink-install                         # 컨테이너
+위 2장(이미지, 빌드)을 끝낸 뒤:
 
-# 실행 (매번)
+```bash
 ros2 launch rby1_driver rby1_ros2_driver.launch.py                            # 호스트: 드라이버
-ros2 run rby1_examples 06_zero_pose                                           # 호스트: 전원·서보 + 영점
 ros2 launch rby1_cumotion demo.launch.py                                      # 컨테이너: 준비 → cuMotion → 실행기 (RViz)
-ros2 run rby1_examples 16_target_shuttle_publisher --ros-args -p cycles:=1    # 호스트: 예제 — 목표 두 개 발행, 실행기의 답 출력 (튜토리얼 §4)
+ros2 run rby1_examples 16_target_shuttle_publisher                            # 호스트: 예제 — 두 지점 왕복, Ctrl+C로 끝 (튜토리얼 4.2)
 ```
 > 컨테이너 터미널은 `isaac-ros`(= `docker exec -u admin`)로 엽니다. `root@…` 셸에서는 드라이버 토픽이 오지 않습니다.
 > cuMotion 런치가 떠 있으면 목표를 받을 때 **로봇이 움직입니다.** 속도·그룹 등 설정은 `rby1_cumotion/config/cumotion.yaml` 한 곳. 문제가 생기면 그 터미널의 메시지가 할 일을 알려 줍니다(자세히: [developer_manual 트러블슈팅](docs/developer_manual.md#12-트러블슈팅)).
@@ -153,18 +163,16 @@ ros2 run rby1_examples 16_target_shuttle_publisher --ros-args -p cycles:=1    # 
 
 ### ⚡ AprilTag 빠른 시작 요약 (Quickstart)
 
-```bash
-# 설치 (처음 한 번, 컨테이너) — 이미지는 cuMotion과 같음
-colcon build --symlink-install --base-paths src/rby1_isaac_ros/rby1_apriltag --packages-select rby1_apriltag
+위 2장(이미지, 빌드)을 끝낸 뒤:
 
-# 실행 (매번)
-ros2 launch rby1_additional_tools camera.launch.py                            # 호스트: 카메라 → /camera/image_raw
+```bash
+ros2 launch rby1_additional_tools camera.launch.py                            # 호스트: 카메라 → /camera/image_raw (RealSense: camera:=realsense)
 ros2 launch rby1_apriltag apriltag.launch.py                                  # 컨테이너: 보정 → 검출 → /rby1/marker/pose
 ros2 topic echo /rby1/marker/pose --once                                      # 호스트: 확인
 ros2 launch rby1_apriltag apriltag.launch.py follow_head:=true                # 컨테이너: 검출 + 머리가 마커를 따라감 (드라이버 필요)
 ros2 launch rby1_apriltag marker_target.launch.py ids:=7,8                    # 컨테이너: 검출 + 마커를 팔 목표로 → 손이 마커로 감 (cuMotion 기동 필요)
 ```
-> 마커 크기(`size`, 검은 사각형 한 변 m)와 찾을 번호(`target_ids`)는 `rby1_apriltag/config/target_tags.yaml` — 이번 실행만 바꾸려면 `size:=0.08 ids:=7,8`. 마커로 손을 움직이는 순서는 [docs/tutorial_cumotion.md 4.7](docs/tutorial_cumotion.md). 자세히: [docs/tutorial_apriltag.md](docs/tutorial_apriltag.md).
+> 마커 크기(`size`, 검은 사각형 한 변 m)와 찾을 번호(`target_ids`)는 `rby1_apriltag/config/target_tags.yaml` — 이번 실행만 바꾸려면 `size:=0.08 ids:=7,8`. cuMotion과 한 번에 켜서 손이 마커를 따라가게 하는 것은 [docs/tutorial_cumotion.md 3.1과 4.2](docs/tutorial_cumotion.md#31-카메라의-마커를-쓸-때). 자세히: [docs/tutorial_apriltag.md](docs/tutorial_apriltag.md).
 
 
 ---

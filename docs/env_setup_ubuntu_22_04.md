@@ -156,10 +156,22 @@ RUN --mount=type=cache,target=/var/cache/apt \
 호스트 설정이 올바르게 되었는지 `isaac_ros_common` 컨테이너를 빌드하고 진입하여 검증합니다.
 
 ### 8.1. 최초 컨테이너 빌드 & 진입 테스트
+
+이 저장소(`rby1_isaac_ros`)는 cuMotion·AprilTag·영상 보정을 **이미지 레이어 하나**(`docker/Dockerfile.cumotion`)로 넣습니다. 첫 빌드
+전에 아래 두 가지를 해 두면 이미지를 한 번만 만듭니다(하지 않고 빌드했다면, 한 뒤 `run_dev.sh`를 다시 실행하면 그 레이어만 더 만듭니다).
+
+```bash
+# 1. 이미지에 들어갈 로봇 모델 파일과 드라이버 메시지 준비 (드라이버 워크스페이스가 빌드돼 있어야 함)
+cd ~/isaac_ros_ws/src/rby1_isaac_ros/docker && ./make_bundles.sh
+# 2. 이 저장소의 레이어를 쓰도록 설정
+cp ~/isaac_ros_ws/src/rby1_isaac_ros/docker/isaac_ros_common-config ~/.isaac_ros_common-config
+```
+
 ```bash
 cd ~/isaac_ros_ws/src/isaac_ros_common
 ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh
 ```
+* 첫 빌드는 수십 분 걸립니다. 컨테이너에 들어간 뒤 패키지 빌드는 [README 2장 Step 4](../README.md#step-4-패키지-빌드-colcon-build)에 있습니다.
 * 최초 실행 시 도커 베이스 이미지 빌드가 진행되며, 완료 후 아래와 같은 컨테이너 셸이 뜨면 **환경 구성이 100% 성공**한 것입니다:
   ```bash
   admin@<hostname>:/workspaces/isaac_ros-dev$
@@ -221,6 +233,56 @@ Jetson Orin 환경의 경우 JetPack이 드라이버와 CUDA를 기본 제공하
    echo "-v /dev:/dev" > ~/.isaac_ros_dev-dockerargs
    ```
 3. 동일하게 `isaac-ros` 단축 커맨드로 실행하면 `aarch64` 전용 컨테이너로 자동 진입합니다.
+
+### 9.1. Jetson에서 이 저장소를 빌드할 때 (cuMotion, AprilTag)
+
+> ⚠️ **아래는 Jetson에서 실제로 해 본 절차가 아닙니다**(2026-10-12 작성). 지금까지의 빌드와 검증은 모두 x86_64 PC(RTX 5070)에서
+> 했습니다. x86과 달라지는 점을 저장소에서 찾아 적은 것이므로, 막히면 그 단계의 출력을 먼저 봅니다.
+
+**x86과 달라지는 것**
+
+| 항목 | x86_64 PC | Jetson Orin |
+|---|---|---|
+| 컨테이너 이름 | `isaac_ros_dev-x86_64-container` | `isaac_ros_dev-aarch64-container` — 문서의 `docker exec`·`docker stop` 명령과 §8의 `isaac-ros` 함수에서 이름을 바꿉니다 |
+| §7의 Dockerfile 패치 | 필요 | **하지 않습니다** |
+| cuRobo 커널을 컴파일하는 GPU 세대 | `9.0+PTX` (RTX 50 우회) | `8.7` — `docker/Dockerfile.cumotion`이 플랫폼을 보고 고릅니다. 손댈 것 없음 |
+| MoveIt (호스트) | `sudo apt install ros-humble-moveit` | 같음. 소스 빌드는 필요 없습니다 |
+| 계획·추적 시간 | 문서의 수치(RTX 5070) | **다시 재야 합니다.** 느리면 `config/cumotion.yaml`의 `avoid`·`planner` 값을 조정 |
+
+**순서**
+
+1. JetPack 버전 확인: `cat /etc/nv_tegra_release`. Isaac ROS `release-3.2`가 지원하는 JetPack 6.x인지 NVIDIA 문서에서 확인합니다
+   (이 저장소는 6.1·6.2 기준으로 썼습니다).
+2. 저장 공간: 이미지가 약 40 GB입니다. NVMe SSD에 Docker 데이터가 있어야 합니다.
+3. 호스트에 ROS 2 Humble, 드라이버 워크스페이스(`~/ros2_driver_ws`), SDK(`~/sdk/rby1-sdk`)를 준비합니다(드라이버 저장소 README).
+4. 모델 파일 준비 — 둘 중 하나:
+   - Jetson에서 `docker/make_bundles.sh` 실행(드라이버 워크스페이스가 빌드돼 있고 `~/sdk/rby1-sdk/models`가 있어야 함)
+   - 다른 PC에서 만든 `docker/bundles/`와 `docker/driver_msgs/`를 같은 자리에 복사(아키텍처와 무관한 파일입니다)
+5. `cp docker/isaac_ros_common-config ~/.isaac_ros_common-config` 뒤 `run_dev.sh -d ~/isaac_ros_ws`. RealSense 레이어를 소스에서
+   빌드하므로 x86보다 오래 걸립니다.
+6. 컨테이너에서 패키지 빌드:
+   ```bash
+   colcon build --symlink-install --base-paths src/rby1_isaac_ros \
+       --packages-select rby1_cumotion rby1_apriltag rby1_isaac_ros_examples
+   ```
+
+**처음 켜기 전에 볼 것** (컨테이너)
+
+```bash
+echo $TORCH_CUDA_ARCH_LIST                                   # 8.7 이어야 합니다
+python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_capability())"   # True (8, 7)
+python3 -c "import curobo.curobolib.kinematics, curobo.curobolib.geom"   # 다시 컴파일한다는 줄 없이 끝나야 합니다
+ros2 run rby1_cumotion check_plan                            # 계획 1회, 로봇은 움직이지 않음 (cuMotion 기동 뒤)
+ros2 run rby1_cumotion replan_benchmark --runs 10            # 재계획 시간 — 로봇·ROS 없이
+```
+
+- 이미지 빌드가 `curobo_compat.py … expected one occurrence to patch`로 멈추면 Jetson 이미지의 cuRobo·torch 버전이 x86과 다른
+  것입니다. 그 메시지가 가리키는 파일을 보고 패치를 맞춥니다.
+- `no kernel image is available for execution on the device`가 나오면 커널이 다른 GPU 세대로 컴파일된 것입니다. 위 첫 줄을 확인합니다.
+- 첫 계획이 5초 안에 안 끝나면 MoveIt 플러그인이 포기합니다(x86에서도 13관절 그룹은 첫 계획이 9.4초였습니다). 런치의 워밍업이
+  끝난 뒤 다시 보냅니다.
+- 이동 중 장애물 회피는 재계획이 약 0.2초 안에 끝나는 것을 전제로 합니다(`avoid.lead`). `replan_benchmark` 결과가 그보다 길면
+  `avoid.lead`를 늘리거나 `avoid.replan_seeds`·`replan_steps`를 줄입니다.
 
 ---
 
@@ -348,4 +410,4 @@ nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
 호스트 환경 구성 및 검증이 완료되었습니다.
 
 - 👉 **[Isaac ROS 메인 가이드](../README.md)**
-- 👉 **[RBY1 cuMotion 순차 가이드](tutorial_cumotion.md)** — 이미지 빌드부터 실기체까지
+- 👉 **[RBY1 cuMotion 가이드](tutorial_cumotion.md)** — 켜기, 예제, 설정 (이미지와 패키지 빌드는 README 2장)

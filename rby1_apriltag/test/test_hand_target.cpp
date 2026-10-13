@@ -35,3 +35,21 @@ TEST(TargetValues, AreTheRowMajorTransform) {
   EXPECT_DOUBLE_EQ(values[14], 0.0);
   EXPECT_DOUBLE_EQ(values[15], 1.0);
 }
+
+TEST(NextMarker, GoesThroughTheMarkersInViewFromTheLowestIdUp) {
+  using rby1_apriltag::next_marker;
+  const std::vector<int64_t> seen{12, 7, 8};
+  EXPECT_EQ(next_marker(seen, std::nullopt), 7);  // the lowest first
+  EXPECT_EQ(next_marker(seen, 7), 8);
+  EXPECT_EQ(next_marker(seen, 8), 12);
+  EXPECT_EQ(next_marker(seen, 12), 7);  // round again
+}
+
+TEST(NextMarker, TakesWhatIsInViewNow) {
+  using rby1_apriltag::next_marker;
+  EXPECT_EQ(next_marker({}, std::nullopt), std::nullopt);
+  EXPECT_EQ(next_marker({}, 7), std::nullopt);
+  EXPECT_EQ(next_marker({8}, 8), 8);        // one marker: that one every time
+  EXPECT_EQ(next_marker({7, 12}, 8), 12);   // 8 went out of view: on to the next above it
+  EXPECT_EQ(next_marker({7, 8}, 12), 7);    // the last one sent is gone: from the lowest
+}

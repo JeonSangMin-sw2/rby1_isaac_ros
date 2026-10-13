@@ -17,4 +17,13 @@ std::array<double, 16> target_values(const Eigen::Matrix3d & orientation, const 
   return values;
 }
 
+std::optional<int64_t> next_marker(const std::vector<int64_t> & seen, std::optional<int64_t> last) {
+  std::optional<int64_t> lowest, above;
+  for (const int64_t id : seen) {
+    if (!lowest || id < *lowest) lowest = id;
+    if (last && id > *last && (!above || id < *above)) above = id;
+  }
+  return above ? above : lowest;
+}
+
 }  // namespace rby1_apriltag

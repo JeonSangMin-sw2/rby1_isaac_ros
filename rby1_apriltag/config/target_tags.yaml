@@ -46,3 +46,12 @@ marker_target:
     left_arm:                          # /rby1/left_arm/target_pose 로 나갑니다
       marker_id: 8
       offset: [0.0, 0.0, -0.10]
+
+# 보이는 마커들을 번호가 낮은 순서로 돌기 (marker_shuttle.launch.py). 실행기가 떠 있으면 로봇이 움직입니다.
+marker_shuttle:
+  ros__parameters:
+    arm: "right_arm"                   # 움직일 팔. /rby1/<arm>/target_pose 로 나갑니다
+    period: 5.0                        # s. 이 간격으로 다음 마커를 목표로 보냅니다 (한 번 움직이는 시간보다 길게)
+    offset: [0.0, 0.0, -0.10]          # m. 마커에서 손 목표까지, base 축 기준
+    fresh: 1.0                         # s. 이 시간 안에 보인 마커만 돕니다 (치운 마커는 빠짐)
+                                       # 도는 마커는 target_ids 전부입니다 (런치가 넘겨 줍니다)

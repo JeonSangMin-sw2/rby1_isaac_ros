@@ -59,7 +59,20 @@ rby1_cumotion/rby1_cumotion/
     ├── check_plan.py         계획 1회, 움직이지 않음
     ├── benchmark.py          N회 측정, 움직이지 않음
     └── replan_benchmark.py   장애물 개수·속도별 재계획 시간 N회 측정, 움직이지 않음 (ROS 그래프 불필요)
+
+rby1_isaac_ros_examples/      예제 런치만 있는 패키지 (10/12) — 컨테이너에서 켜는 것을 용도별로 런치 하나에
+└── launch/cumotion_with_markers.launch.py   apriltag.launch.py + cumotion.launch.py
 ```
+
+`cumotion_with_markers.launch.py`는 두 런치를 그대로 포함합니다. 둘 다 `config` 인자가 있어서 `tags_config`·`cumotion_config`로 나눠
+받고, 마커 쪽 포함만 `GroupAction`으로 감쌉니다 — cuMotion 런치는 prepare가 끝난 뒤에 인자를 다시 읽으므로 묶으면 그때 값이 사라집니다.
+🟠 시뮬레이터(10/12, 1회): 호스트에 드라이버와 카메라(마커 그림 파일, `camera:=file`)만 띄우고 이 런치 하나로 실행기 `READY`,
+`/rby1/marker_7/pose` 발행(0.374 m), 예제 16의 목표 2개 `DONE`.
+
+호스트의 MoveIt은 apt 판(`ros-humble-moveit` 2.5.9)이면 됩니다(10/12 확인). 이 PC는 소스로 빌드한 MoveIt(`~/ws_moveit2`)이 환경에
+먼저 잡혀 있었는데, 드라이버 저장소 패키지는 MoveIt 라이브러리에 링크하지 않고(`move_group` 실행 파일과 런치 도구만 씀) apt 판만 있는
+환경에서 16개 패키지가 모두 빌드되며, `rby1_moveit_executor`로 목표 10개(그중 6개는 상자를 돌아감)가 `DONE`이었습니다.
+`~/ros2_driver_ws/install`은 그 환경에서 다시 빌드해 소스 빌드 MoveIt을 더는 물고 있지 않습니다.
 
 import 경로는 폴더를 따릅니다(예: `rby1_cumotion.executor.avoidance`, `rby1_cumotion.bringup.driver`,
 `rby1_cumotion.tools.benchmark`). 실행 파일 이름(`ros2 run rby1_cumotion <이름>`)과 런치 파일 이름은 폴더와 무관하게 그대로입니다.
@@ -133,7 +146,7 @@ bundles/m_1_2/                    31 MB
   AprilTag(`isaac-ros-apriltag`), 영상 보정(`isaac-ros-image-proc`). 워크스페이스에 소스로 두는 것은 `isaac_ros_common`
   (컨테이너 실행 스크립트)뿐입니다. apt 레이어는 cuRobo 커널 컴파일 뒤에 두어, 추가해도 커널을 다시 컴파일하지 않습니다(재빌드 약 1분)
 - 예전에 소스로 빌드한 NVIDIA 패키지는 워크스페이스 `install/`에 있으면 apt 설치본보다 우선하므로 치워야 합니다
-  (이 PC: `~/isaac_ros_ws/nvidia_build_backup/`로 옮김, `COLCON_IGNORE`)
+  (이 PC에서는 `nvidia_build_backup/`로 옮겨 두었다가 10/13에 `src/isaac_ros_apriltag` 소스 클론, 옛 번들 `cumotion_models/`와 함께 지움)
 - 카메라는 컨테이너에 없습니다: 호스트 `rby1_additional_tools`가 `/camera/image_raw`·`/camera/camera_info`로 넘기고, 컨테이너
   `rby1_apriltag apriltag.launch.py`가 보정 → AprilTag → 대상 필터. 실측(합성 이미지, 태그 7, 200 px, f=640, 0.10 m):
   기대 0.320 m → 0.3216 m, 15 Hz 입력 그대로 15 Hz. **Isaac ROS 노드는 reliable로 구독**하므로 best-effort 발행자의 영상은
@@ -141,6 +154,17 @@ bundles/m_1_2/                    31 MB
 
 `docker/Dockerfile.cumotion`은 isaac_ros_common 레이어 체인(`x86_64 → ros2_humble → realsense → cumotion`)의
 마지막 레이어입니다. `docker/isaac_ros_common-config`가 체인을 설정합니다.
+
+cuRobo 커널을 컴파일할 GPU 세대(`TORCH_CUDA_ARCH_LIST`)는 플랫폼별로 다릅니다(10/12): `build_image_layers.sh`가 모든 레이어에 넘기는
+`PLATFORM`(amd64 / arm64)으로 Dockerfile 맨 위의 두 단계 `cuda_amd64`(`9.0+PTX`, RTX 50 우회)와 `cuda_arm64`(`8.7`, Jetson Orin) 중
+하나에서 시작합니다(`FROM cuda_${PLATFORM}`). 전에는 `9.0+PTX` 하나였는데, compute_90용 PTX는 Orin(compute_87)에서 실행되지 않습니다.
+확인한 것: 고르는 동작(그 부분만 떼어 만든 임시 이미지에서 amd64 → `9.0+PTX`, arm64 → `8.7`, BuildKit 켬·끔 모두), 그리고 x86에서
+전체 이미지 재빌드(10/13, 이 레이어 약 4분) 뒤 `TORCH_CUDA_ARCH_LIST=9.0+PTX`, cuRobo 커널 적재, 패키지 빌드, cuMotion 모듈 import.
+**Jetson에서는 아무것도 해 보지 않았습니다.**
+
+`docker/COLCON_IGNORE`(10/13): `colcon build --base-paths src/rby1_isaac_ros`가 `docker/driver_msgs/`(이미지에 넣으려고 복사해 둔
+`rby1_msgs`)까지 빌드해 이미지의 `rby1_msgs`를 워크스페이스 것이 가리던 것을 막습니다. 이제 그 명령 하나로 `rby1_cumotion`,
+`rby1_apriltag`, `rby1_isaac_ros_examples` 셋만 빌드됩니다.
 
 | 단계 | 내용 |
 |---|---|
@@ -666,17 +690,19 @@ done
 | 몸통을 쓰는 점대점 목표의 준비(자세 3곳 검사 + 계획 2번 + 모델 맞춤 4번 × 0.84 s) | 몸통 출발 전 2.7~2.9 s, 몸통이 멈춘 뒤 팔 출발까지 약 1.9 s (목표 전체 10.5 s) | ✗ | ✗ | 아래 **단축 후보** (처음 적은 "약 2 s"는 모델 맞춤을 0.41 s로 잡은 어림값이었음) |
 | 같음, `reach.quick_check: true` | 몸통 출발 전 0.92~1.02 s, 그 뒤는 같음 (목표 전체 8.7 s) | ✗ | ✗ | 아래 **단축 후보** ② |
 | 점대점 도착 오차 (cuMotion, MoveIt, 몸통 사용 포함) | 0.0~0.3 mm | ✓ | ✓ | 여러 표 |
-| 추적, 이동 중 4~6 cm/s (몸통 없이) | 평균 0.7~1.4 mm | △ | ✓ | §6.2, 튜토리얼 4.7 |
+| 추적, 이동 중 4~6 cm/s (몸통 없이) | 평균 0.7~1.4 mm | △ | ✓ | §6.2, 튜토리얼 4.2 |
 | 추적, 이동 중 4 cm/s (몸통 사용) | 평균 2.0 mm, 최악 7~14 mm | ✗ | ✗ | 추적 모드 + 몸통 |
 | 추적, 멈춘 뒤 | 0.1~0.4 mm | ✓ | ✓ | 같음 |
-| 마커를 점대점으로 따라갈 때, 4 cm/s | 약 50 mm 뒤처짐 | ✗ | ✗ | 튜토리얼 4.7 (추적 모드를 써야 함) |
+| 마커를 점대점으로 따라갈 때, 4 cm/s | 약 50 mm 뒤처짐 | ✗ | ✗ | 튜토리얼 4.2 (추적 모드를 써야 함) |
 
 기준을 넘는 것은 셋: 첫 계획 시간, 몸통을 쓰는 목표의 준비 시간, 몸통을 쓰는 추적의 이동 중 오차. 줄일 방법은 아래에 조사함.
 
 #### 단축 후보 (10/08 조사 — ①과 ②의 권장안은 옵션으로 넣음, 기본은 꺼짐)
 
-후보마다 10회 이상 쟀습니다. 스크립트와 결과: `~/isaac_ros_ws/cumotion_artifacts/perf_2026-10-08/`(`perf.py` — 로봇·ROS 없이
-cuRobo만, `summary.txt`, `report.json`; `sim_sessions.sh`, `summary_tracking.txt`, `sim/` — 시뮬레이터). 실제 로봇 값은 없습니다.
+후보마다 10회 이상 쟀습니다(로봇·ROS 없이 cuRobo만 돌린 것과 시뮬레이터). 실제 로봇 값은 없습니다.
+
+> 이 문서가 "기록"으로 가리키는 `~/isaac_ros_ws/cumotion_artifacts/`(측정 스크립트와 원본 로그)는 10/13에 사용자 요청으로 지웠습니다.
+> 아래 수치는 남아 있지만 원본으로 다시 확인할 수는 없습니다. 다시 재려면 스크립트부터 새로 만들어야 합니다.
 
 **① 첫 계획 시간** (지금 기본 경로: MoveIt + cuMotion 플래너 노드, 142~153 ms. 10/08 재측정 151~196 ms, n=12)
 
@@ -901,7 +927,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `test_attached.py` | 붙인 모듈의 덮는 구(상자·원통 모서리까지), 손 끝·머리·그 밖 분류, `free_objects`로 빼기와 MoveIt 허용 행렬, 구 100개 한도 |
 | `test_tracking.py` | 목표 필터(앞서 겨누기와 최대 거리, 오래된 표본, 끊긴 뒤·건너뛴 뒤 재시작, 정지 판정, 노이즈 억제, 등속·회전 추종), 모드 전환(이동 중 거부), IK 서보 한 걸음(목표를 넘지 않음, 속도·가속도 한계, 작은 변화를 쫓지 않음, 목표 속도 피드포워드), 야코비안 관절 속도(특이점에서 작게), `tracking.method` 검사 |
 
-드라이버 저장소: `rby1_moveit_objects` gtest 25개(C++, `scene` 명령 12 + 모듈 6 + 지점 물체 7, `colcon test --packages-select rby1_moveit_objects`), `rby1_moveit_executor` gtest 12 + pytest 3(C++, `colcon test --packages-select rby1_moveit_executor`), `rby1_additional_tools` gtest(카메라 모델). AprilTag는 [AprilTag §5](#5-검증과-테스트).
+드라이버 저장소: `rby1_moveit_objects` gtest 26개(C++, `scene` 명령 12 + 모듈 6 + 지점 물체 8, `colcon test --packages-select rby1_moveit_objects`), `rby1_moveit_executor` gtest 12 + pytest 3(C++, `colcon test --packages-select rby1_moveit_executor`), `rby1_additional_tools` gtest(카메라 모델). AprilTag는 [AprilTag §5](#5-검증과-테스트).
 `rby1_examples`에는 예제 전용 테스트를 두지 않습니다(10/02: 공용 파일을 없애면서 삭제, 원래 있던 flake8/pep257/copyright만 남음).
 
 #### 예제 (드라이버 저장소 `rby1_examples` 15, 16)
@@ -913,7 +939,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | 지금 (10/08) | 10/02~10/05 | 그 전 | 내용 |
 |---|---|---|---|
 | `15_cartesian_target_move` | `15_target_move`(실행기에 목표 하나) | `15_moveit_move_hand`, `16_moveit_move_to_pose`, `pub_cartesian_pose` | **가장 단순한 타깃 실행기**(10/08부터): `/rby1/<팔>/target_pose`를 듣고 계획 없이 드라이버로 손을 보냄 — `mode:=command`(`robot_cartesian`) 또는 `mode:=stream`(`stream_cartesian`). 답은 `/rby1/<팔>/target_status`(`READY`, `EXECUTING …`, `DONE`, `FAILED: …`). 충돌 검사 없음. 목표 토픽에 이미 구독자가 있으면(다른 실행기) 시작하지 않음. 10/06~10/08에는 파라미터(`offset_xyz`·`xyzrpy`·`matrix`)로 준 목표 하나로 가고 끝났음 |
-| `16_target_shuttle_publisher` | `16_target_shuttle` | `23_marker_shuttle` | 목표를 발행만 하는 예제(10/08부터): `point_a`·`point_b`(x, y, z, roll, pitch, yaw 값 6개)를 `period`초마다 번갈아 `target_topic`으로 발행. `status_topic`의 답은 출력만 함. 목표 두 개만은 `cycles:=1` |
+| `16_target_shuttle_publisher` | `16_target_shuttle` | `23_marker_shuttle` | 목표를 발행만 하는 예제(10/08부터): `point_a`·`point_b`(x, y, z, roll, pitch, yaw 값 6개)를 `period`초마다 번갈아 `target_topic`으로 발행. `status_topic`의 답은 출력만 함. Ctrl+C까지 계속(10/13에 `cycles` 파라미터를 뺌 — 끄면 끝나므로 필요 없다는 사용자 판단. 목표 하나는 `ros2 topic pub`으로) |
 | `rby1_apriltag`의 `marker_target`(노드·런치) | `17_marker_tracking` `hand.via:=executor` | `22_marker_tracking` | 마커를 팔 목표 토픽으로 계속 보냄 |
 | `rby1_apriltag`의 `head_follow`(`follow_head:=true`) | `17_marker_tracking` `follow:=head` | `rby1_additional_tools`의 C++ 노드 | 머리가 마커를 따라감 |
 | 없음 (검증용이라 예제에서 뺌) | `16_target_shuttle`의 `DONE` 대기·손 오차 확인·`mode:=markers`, `17_marker_tracking`의 드라이버 직접 추종 | `17`~`24`, `moveit_target.py` | 구간마다 `DONE`을 기다리며 손 오차를 재던 왕복, 손을 드라이버 `stream_cartesian`으로 따라가게 하던 비교, 타이밍을 맞춘 장애물 시나리오(`blocked_target`, `box_on_the_way`, `approaching_box`, `box_stops_on_the_path`, `new_target`), 그리퍼·집기 시나리오(`gripper_wall`, `pick_flow`) |
@@ -1002,7 +1028,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | 〃 | `watches_while_moving` (읽기 전용) | `avoid.enabled` |
 | `prepare` (명령행) | `--config --hardware --model --model-directory --group --driver-namespace` | 설정 `robot` 구역 |
 | `benchmark` | `hardware`, `runs`, `settle`, `output` | `''`(런치 따름), `10`, `0.5`, `''` |
-| `16_target_shuttle_publisher` | `target_topic`, `status_topic`, `point_a`, `point_b`, `period`, `cycles` | `/rby1/right_arm/target_pose`, `/rby1/right_arm/target_status`, 준비 자세 손, 그 30 cm 위, `5.0`, `3` |
+| `16_target_shuttle_publisher` | `target_topic`, `status_topic`, `point_a`, `point_b`, `period` | `/rby1/right_arm/target_pose`, `/rby1/right_arm/target_status`, z 1.0, z 1.5(같은 x·y·방향), `5.0` |
 | `replan_benchmark` | `--settings SEEDS,STEPS,ITERS`, `--runs`, `--output` | §9 |
 
 #### 알려진 한계
@@ -1017,7 +1043,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `nothing on ee_right is in cuMotion's model …` | 손 끝에 붙인 모듈이 없음(팔 모델은 `ee`에서 끝남) | ✔ | 위와 같음, 또는 `robot.body_ends_at_tool: false` |
 | 링크에 붙인 물체 | cuMotion은 손 끝에 단단히 붙은 것만(덮는 구, §6), 머리는 덮개 구, 그 밖은 무시. MoveIt(OMPL)은 전부 반영 |
 | 이동 시간 | 실제 약 15% 김 (드라이버가 웨이포인트마다 전송 후 잠듦) |
-| Jetson Orin, CUDA 12.8+ | 미검증 / PTX 우회 중 |
+| Jetson Orin, CUDA 12.8+ | 미검증 / PTX 우회 중. Jetson에서 달라지는 것과 순서는 `env_setup_ubuntu_22_04.md` 9.1 (실행해 보지 않은 절차) |
 
 ### 12. 트러블슈팅
 
@@ -1032,7 +1058,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | 이미지 빌드가 `No model bundles: run docker/make_bundles.sh on the host first` | `make_bundles.sh`를 건너뜀 | 실행 후 다시 빌드 (메시지가 안내) |
 | `nvidia-smi`가 `Driver/library version mismatch`, `Failed to initialize NVML` | GPU 드라이버 문제 | [env_setup 10장](env_setup_ubuntu_22_04.md) |
 | 패키지 빌드가 `[Errno 17] File exists: ... resource/rby1_cumotion` | 이전 빌드 잔재 | `rm -rf build/rby1_cumotion install/rby1_cumotion` 후 다시 빌드 |
-| `ros2 run rby1_cumotion ...`이 `Package not found` | 워크스페이스 빌드 전 | 튜토리얼 2.2 |
+| `ros2 run rby1_cumotion ...`이 `Package not found` | 워크스페이스 빌드 전 | README 2장 Step 4 |
 | 컨테이너 프롬프트가 `root@…` | `-u admin` 없이 들어옴 | 나가서 `isaac-ros`로 다시. `isaac-ros`가 root로 들어가면 `~/.bashrc`의 함수를 [env_setup 8.2](env_setup_ubuntu_22_04.md)대로(같은 함수가 두 번 있으면 뒤의 것이 쓰임). 기동 중에 root면 `read_robot`이 원인을 로그에 붙임 |
 | `RTPS_TRANSPORT_SHM Error ... open_and_lock_file failed` 뒤 토픽이 안 옴 | 강제로 끈 ROS 프로세스들의 공유 메모리 잔재 | 호스트에서 `fastdds shm clean` 후 그 노드를 다시 실행 |
 | `Couldn't parse parameter override rule ... Sequence should be of same type` | 예제의 목록 파라미터(`16_target_shuttle_publisher`의 `point_a`·`point_b`)에 정수가 섞임. rclpy가 노드 코드 전에 실패 | 모든 값을 `1.0`처럼 소수로 |
@@ -1095,7 +1121,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `Driver aborted the trajectory (-1): Could not send the trajectory to the robot: … command stream failed …` | 드라이버 스트림이 만료된 채 다시 열리지 않음(§4) | ✔ |
 | `Driver aborted the trajectory (-2): Limit exceeded: joint … at waypoint 0` | 관절이 한계 값 바로 위에 있음(OMPL이 거기 둠) — MoveIt 실행기는 한계 안쪽 1e-4 rad로 보내도록 수정 | ✔ 드라이버 문구 |
 
-#### AprilTag·마커 예제 ([tutorial_apriltag.md](tutorial_apriltag.md), [tutorial_cumotion.md 4.7](tutorial_cumotion.md))
+#### AprilTag·마커 예제 ([tutorial_apriltag.md](tutorial_apriltag.md), [tutorial_cumotion.md 3.1·4.2·4.3](tutorial_cumotion.md#31-카메라의-마커를-쓸-때))
 
 | 메시지·증상 | 원인 | 로그 안내 | 해결 |
 |---|---|---|---|
@@ -1125,7 +1151,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `[head_follow]: command refused: …; retrying in 0.5 s` | 궤적이 머리를 잡음, 머리 채널이 닫힘(60초 무명령, 다른 프로그램이 닫음) — 다시 열고 이어 감 | ✔ | 드라이버 로그의 `[STREAM REJECTED]`가 이유 |
 | `[marker_target]: right_arm: no target executor listens on /rby1/right_arm/target_pose` | 실행기가 안 떠 있거나 그 팔을 듣지 않음(cuMotion은 계획 그룹의 팔만 — 왼팔은 `group:=left_arm`) | ✔ | 실행기 기동 후 `READY`. 뜨면 그때 마커로 첫 목표를 보냄 |
 | `[marker_target]: … marker 7 is seen but its place in base is unknown …` | 로봇 TF(실행기 런치)나 카메라 장착 TF(`camera.launch.py`)가 없음 | ✔ | `ros2 run tf2_ros tf2_echo base target_marker_7` |
-| 마커를 조금 움직였는데 손이 안 따라옴 | 직전 목표에서 `min_move`(1 cm) 미만 | — | 정상. 계속 따라가게 하려면 추적 모드 + `min_move:=0.0`(튜토리얼 4.7) |
+| 마커를 조금 움직였는데 손이 안 따라옴 | 직전 목표에서 `min_move`(1 cm) 미만 | — | 정상. 계속 따라가게 하려면 추적 모드 + `min_move:=0.0`(튜토리얼 4.2) |
 | `/rby1/stream_control is not available …` / `stream_joint is not available …` | 드라이버 없음 | ✔ | |
 | 드라이버 `[STREAM REJECTED] stream_joint ignored: another command on the stream is still moving other parts.` | 머리 추적 중 `robot_joint` 등 다른 부위 명령이 움직이는 중 — 끝나면 머리 추적이 이어 감 | ✔ | |
 | 정지 이미지(`camera:=file`)로 마커가 안전 구역 밖이면 머리가 한계까지 감 | 영상이 머리를 따라 바뀌지 않아 오차가 줄지 않음 — 정상 | — | 가운데 마커 이미지로 확인 |
@@ -1141,7 +1167,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 
 ## AprilTag
 
-사용법은 [tutorial_apriltag.md](tutorial_apriltag.md)와 [tutorial_cumotion.md 4.7](tutorial_cumotion.md). 트러블슈팅은 §12의 **AprilTag·마커 예제**.
+사용법은 [tutorial_apriltag.md](tutorial_apriltag.md)와 [tutorial_cumotion.md 3.1·4.2·4.3](tutorial_cumotion.md#31-카메라의-마커를-쓸-때). 트러블슈팅은 §12의 **AprilTag·마커 예제**.
 
 ### 1. 구조
 
@@ -1200,6 +1226,7 @@ Python에서 C++로 옮겼고(`src/target_tag_filter.cpp`, 계산은 `src/pose_a
 |---|---|---|
 | `head_follow` | `apriltag.launch.py follow_head:=true`, 또는 설정 `head_follow: enabled: true` | 마커가 안전 구역을 벗어나면 머리가 따라가 다시 안에 둠 |
 | `marker_target` | `marker_target.launch.py`(검출 포함, `follow_head`도 받음) | 팔마다 마커 + 오프셋을 손 목표 토픽으로 |
+| `marker_shuttle` | `marker_shuttle.launch.py`(검출 포함), 예제 런치의 `MARKER_SHUTTLE` | 한 팔이 보이는 마커들을 번호가 낮은 순서로 돎: `period`마다 다음 마커 + 오프셋을 목표로 |
 
 파일: 머리 추적은 헤더 하나와 소스 하나 — `include/rby1_apriltag/head_follow.hpp`, `src/head_follow.cpp`(10/08, 그 전의
 `head_look.hpp`·`head_look.cpp`는 없앰). 헤더에 ROS 없는 로직(`head_from_optical`, `look_error`, `step_toward`, `FollowSettings`,
@@ -1303,7 +1330,7 @@ Python에서 C++로 옮겼고(`src/target_tag_filter.cpp`, 계산은 `src/pose_a
 | `22`, 마커에 1 mm 노이즈 | 0.8 | 3.2~3.7 | 8.4~9.2 | 0.4~0.5 s | 오차 최대 1.5 |
 
 즉 드라이버 스트림은 약 0.33 s 늦게 따라가지만 노이즈에는 둔하고, cuMotion `ik`는 지연이 거의 없는 대신(앞서 겨누기) 마커
-노이즈에 더 민감 — 실제 카메라에서 손이 떨리면 `tracking.smoothing`↑·`tracking.lead`↓로 맞춤(튜토리얼 §4.7의 "손이 떨릴 때" 표).
+노이즈에 더 민감 — 실제 카메라에서 손이 떨리면 `tracking.smoothing`↑·`tracking.lead`↓로 맞춤(튜토리얼 4.2의 "손이 떨릴 때" 표).
 
 #### 왕복 (옛 예제 `16_target_shuttle`의 `mode:=markers`, 그 전 `23`)
 
@@ -1317,6 +1344,51 @@ Python에서 C++로 옮겼고(`src/target_tag_filter.cpp`, 계산은 `src/pose_a
 - 실측(격리 시뮬, 마커 7·12를 `base` (0.45, −0.45, 1.25)·(0.45, −0.10, 1.25)에 가짜 TF): 3왕복 6구간 모두 `DONE`, **끝점 오차
   0.0~0.6 mm**. 손이 두 지점의
   가운데를 지나는 최소 거리 — 상자 없이 5.3~6.0 cm, 상자를 넣은 뒤 14.1~14.6 cm(돌아감)
+
+#### 마커들을 차례로 돌기 (`marker_shuttle`, 10/13)
+
+"인식된 마커들을 번호가 낮은 순서대로 퍼블리시하는 셔틀 예제"(사용자, 10/13). 예제 16은 정해 둔 두 지점만 발행하고 마커를 읽지
+않아서(10/08에 `mode:=markers`를 뺌), 마커 쪽은 `rby1_apriltag`에 노드를 따로 두었습니다. `marker_target`과 같은 틀입니다
+(`src/marker_shuttle.cpp`, 계산은 `hand_target.hpp`의 `hand_point`·`target_values`와 새 `next_marker`).
+
+- `marker_ids`의 마커마다 `/rby1/marker_<id>/pose`를 받아, 영상 시각의 TF로 `base`에 옮기고 `offset`을 더해 둠(받은 시각과 함께)
+- `period`마다: `fresh`(1 s) 안에 보인 마커 가운데 **직전에 보낸 번호 바로 위**, 없으면 가장 낮은 번호를 목표로 보냄(`next_marker`).
+  치운 마커는 빠지고, 새로 보인 마커는 그 번호 자리에 끼어듦. 하나만 보이면 그 마커를 매번 보냄
+- 손 방향은 첫 목표를 보낼 때 그대로. 발행만 함 — 도착을 기다리지 않으므로 `period`가 이동 시간보다 길어야 함
+- `marker_ids`는 런치가 넘김(`ids:=` 또는 `target_ids`). 팔·간격·오프셋은 `target_tags.yaml`의 `marker_shuttle:`
+- 예제 런치의 `MARKER_TARGET`과 `MARKER_SHUTTLE`을 같이 켜면 둘 다 같은 팔에 목표를 보내므로 런치가 거부함
+
+🟠 확인(10/13): gtest 2개(`next_marker`: 순서, 한 바퀴 돌기, 빠진 마커, 비었을 때). 노드는 로봇 없이 **호스트의 임시 빌드**로, 다른 ROS
+도메인에서 가짜 마커 7·8·12와 고정 TF를 주고 돌림 — 1초 간격으로 7 → 8 → 12 → 7 … 순서로 13개가 나갔고, 8번을 끊자 7 → 12 → 7 …로
+바뀜. **컨테이너 빌드, 실제 마커 검출과 실행기를 붙인 이동은 해 보지 않았습니다.**
+
+#### 마커를 장애물로 (10/12, 드라이버 저장소 `rby1_moveit_objects`의 `object_at_point`)
+
+"왕복하다가 7번 마커가 보이면 그 자리에 물체를 놓고 피한다"(사용자, 10/08). 마커 좌표(`/rby1/marker_<id>/pose`, 카메라 좌표계의
+PoseStamped)와 지점 토픽(`/rby1/scene/object_point`, PointStamped)은 형이 달라 이어지지 않아서, `object_at_point`에 파라미터 둘을 더했습니다.
+
+- `pose_topic`: 그 토픽의 자세에서 위치만 꺼내 TF로 `base`에 옮겨(자세의 stamp 기준, 0.2 s까지 기다림) 물체를 놓음. 방향은 쓰지 않음.
+  MoveIt에 카메라 좌표계째로 넘기지 않고 노드에서 옮기는 것은 `marker_target`과 같은 방식
+- `min_move`(기본 1 cm): 마지막으로 놓은 자리에서 이만큼 벗어나야 다시 놓음 — 영상마다 떨리는 좌표가 장면을 계속 바꾸지 않게
+- `remove_after`(10/13, 기본 0 = 지우지 않음): 좌표가 이 시간(초) 넘게 안 오면 물체를 장면에서 빼고, 다시 오면 다시 놓음.
+  🟠 켜져 있는 cuMotion 장면에 로봇에서 3 m 떨어진 시험용 상자로 1회 확인: 좌표가 끊기고 2.0 s 뒤 장면에서 사라짐
+- 실행기는 손대지 않았습니다. 놓인 물체는 `scene` 명령으로 넣은 것과 같은 장애물입니다
+
+🟠 시뮬레이터(10/12, 가짜 마커 — 진짜 위치에서 만든 좌표와 TF, 카메라 없음. 예제 16 `cycles:=10 period:=8.0`, 두 지점 한가운데
+(0.413, −0.367, 1.266)에 두 번 왕복 뒤 마커를 보임. 실행기마다 1회):
+
+| 실행기 | 목표 20개 | 손이 상자 중심을 지나는 최소 거리, 마커 전 → 후 |
+|---|---|---|
+| MoveIt (`rby1_moveit_executor`) | 20/20 `DONE` | 4.1~4.3 cm → 8.9~13.8 cm |
+| cuMotion | 20/20 `DONE` | 3.0~3.5 cm → 13.5~14.8 cm |
+
+- 물체는 한 번만 놓였고(좌표가 마커 자리와 mm까지 같음), 그 뒤 좌표가 1 cm 안이라 다시 놓지 않음
+- **팔이 지나가는 순간에 놓이면** cuMotion은 `obstacle too close to plan around in time`으로 멈추고, 팔이 물체에 닿은 채(`link_right_arm_5`)라
+  이어진 목표 15개가 모두 `INVALID_START_STATE_WORLD_COLLISION`으로 거절됐습니다(첫 시도에서 가짜 마커가 2.4 s 늦게 나와 생긴 일 —
+  의도한 시험은 아니었지만 설계대로의 동작). MoveIt 실행기는 이동 중에 장면을 보지 않아 그 구간은 그대로 지나가고 다음 구간부터 돌아감
+- 돌아가는 구간은 MoveIt에서 3.3~4.3 s라 예제 16의 기본 주기 5 s를 넘음 → `period:=8.0`
+- 하지 않은 것: 실제 카메라(좌표 떨림, 팔이 마커를 가릴 때), 왼팔, 추적 모드, 마커가 계속 움직이는 경우
+- 기록: `~/isaac_ros_ws/cumotion_artifacts/marker_obstacle_2026-10-12/`
 
 ### 4. 카메라 노드 (C35)
 

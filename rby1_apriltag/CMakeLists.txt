@@ -30,11 +30,15 @@ add_executable(marker_target src/marker_target.cpp)
 target_link_libraries(marker_target ${PROJECT_NAME}_core)
 ament_target_dependencies(marker_target rclcpp geometry_msgs std_msgs tf2_ros)
 
+add_executable(marker_shuttle src/marker_shuttle.cpp)
+target_link_libraries(marker_shuttle ${PROJECT_NAME}_core)
+ament_target_dependencies(marker_shuttle rclcpp geometry_msgs std_msgs tf2_ros)
+
 add_executable(head_follow src/head_follow.cpp)
 target_link_libraries(head_follow ${PROJECT_NAME}_core)
 ament_target_dependencies(head_follow rclcpp rclcpp_action geometry_msgs sensor_msgs rby1_msgs)
 
-install(TARGETS target_tag_filter marker_target head_follow DESTINATION lib/${PROJECT_NAME})
+install(TARGETS target_tag_filter marker_target marker_shuttle head_follow DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
