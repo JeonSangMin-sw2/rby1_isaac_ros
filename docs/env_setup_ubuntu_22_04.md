@@ -4,6 +4,23 @@
 
 호스트 설정부터 `isaac_ros_common` 컨테이너에 정상 진입하고 단축 커맨드를 등록하는 단계까지 완료하면 기본 환경 구성이 끝납니다.
 
+> [!NOTE]
+> **Jetson은 [9장](#9-jetson-orin-jetpack-6x-설치-순서)만 따라 합니다.** 2~8장은 x86 PC용이고, Jetson에서 필요한 명령은 9장에 순서대로 있습니다.
+
+**전체 순서**
+
+| 순서 | 할 일 | 어디에 |
+|---|---|---|
+| 1 | 호스트에 ROS 2 Humble, RB-Y1 SDK, 드라이버 워크스페이스 빌드 | 드라이버 저장소(`rby1-ros2`) README |
+| 2 | 호스트 준비: 그래픽 드라이버, Docker, Buildx, 디바이스 마운트 | 이 문서 2~5장 |
+| 3 | 저장소 두 개 클론: `isaac_ros_common`, `rby1_isaac_ros` | 6장 |
+| 4 | (x86 PC만) NVIDIA Dockerfile 패치 | 7장 |
+| 5 | 이미지 만들기, 컨테이너 진입, `isaac-ros` 등록 | 8장 |
+| 6 | 컨테이너 안에서 이 저장소의 패키지 빌드(`colcon build`) | [README 2장](../README.md#2--컨테이너에서-패키지-빌드) |
+
+1번이 먼저인 이유: 5번에서 이미지에 넣을 로봇 모델과 메시지 정의를 드라이버 워크스페이스에서 가져옵니다.
+6번의 `colcon build`는 5번에서 만든 컨테이너 **안에서만** 됩니다(NVIDIA 패키지가 그 이미지에 들어 있습니다).
+
 ---
 
 ## 1. 지원 버전 매트릭스
@@ -17,7 +34,8 @@
 
 ## 2. NVIDIA 그래픽 드라이버 설정
 
-> ℹ️ **Jetson은 이 장을 건너뜁니다.** 드라이버는 JetPack에 들어 있습니다. Jetson에서 달라지는 곳은 [9장](#9-jetson-orin-jetpack-6x-특이사항)에 모았습니다.
+> [!NOTE]
+> **Jetson은 이 장을 건너뜁니다.** 드라이버는 JetPack에 들어 있습니다([9장](#9-jetson-orin-jetpack-6x-설치-순서)).
 
 ### 2.1. 현재 설치된 드라이버 확인
 이미 NVIDIA 드라이버가 설치되어 있다면 먼저 정상 동작 여부를 확인합니다:
@@ -65,13 +83,17 @@ sudo reboot
 
 컨테이너 내부에서 GPU 가속을 활용하기 위해 툴킷과 런타임을 구성합니다.
 
-> ℹ️ **Jetson**: JetPack을 `nvidia-container` 패키지까지 설치했으면 Docker와 툴킷이 이미 있습니다. 아래에서 `git git-lfs` 설치와
-> `usermod`·`newgrp` 두 줄만 하고, 나머지는 [9장](#9-jetson-orin-jetpack-6x-특이사항)의 CDI 설정으로 넘어갑니다.
+> [!IMPORTANT]
+> **Jetson은 이 장 대신 [9.1절](#91-호스트-준비)을 합니다.** JetPack에 Docker와 툴킷이 이미 있어서 아래 설치 명령은 충돌합니다.
 
 ```bash
-# 1. Docker 기본 설치 (이미 설치된 경우 생략)
+# 1. Docker 설치 — `docker --version`이 이미 나오면 이 두 줄은 건너뜁니다.
+#    (Docker 공식 저장소로 설치돼 있으면 docker.io가 `containerd.io : Conflicts: containerd`로 거부됩니다)
 sudo apt update
-sudo apt install -y docker.io git git-lfs
+sudo apt install -y docker.io
+
+# 1-1. git-lfs와 docker 그룹 (항상)
+sudo apt install -y git git-lfs
 sudo usermod -aG docker $USER
 newgrp docker
 
@@ -118,14 +140,18 @@ echo "-v /dev:/dev" > ~/.isaac_ros_dev-dockerargs
 
 ---
 
-## 6. `isaac_ros_common` 클론 (`release-3.2`)
+## 6. 저장소 클론 (`isaac_ros_common` `release-3.2`, `rby1_isaac_ros`)
 
-도커 환경 구동을 위해 NVIDIA 공식 `isaac_ros_common` 패키지를 워크스페이스 `src/` 디렉터리에 클론합니다:
+워크스페이스 `src/`에 두 개를 받습니다. NVIDIA의 `isaac_ros_common`은 컨테이너를 만들고 켜는 스크립트이고, `rby1_isaac_ros`는
+이 저장소입니다(이미지 레이어와 RB-Y1 패키지).
 
 ```bash
-cd ~/isaac_ros_ws/src
+mkdir -p ~/isaac_ros_ws/src && cd ~/isaac_ros_ws/src
 git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+git clone https://github.com/JeonSangMin-sw2/rby1_isaac_ros.git      # 이미 받았으면 건너뜁니다
 ```
+
+두 저장소는 **같은 `src/` 안에** 나란히 있어야 합니다. 워크스페이스 자체는 어디에 둬도 됩니다(8.1절).
 
 ---
 
@@ -168,22 +194,40 @@ RUN --mount=type=cache,target=/var/cache/apt \
 전에 아래 두 가지를 해 두면 이미지를 한 번만 만듭니다(하지 않고 빌드했다면, 한 뒤 `run_dev.sh`를 다시 실행하면 그 레이어만 더 만듭니다).
 
 ```bash
-# 1. 이미지에 들어갈 로봇 모델 파일과 드라이버 메시지 준비 (드라이버 워크스페이스가 빌드돼 있어야 함)
-cd ~/isaac_ros_ws/src/rby1_isaac_ros/docker && ./make_bundles.sh
-# 2. 이 저장소의 레이어를 쓰도록 설정
-cp ~/isaac_ros_ws/src/rby1_isaac_ros/docker/isaac_ros_common-config ~/.isaac_ros_common-config
-```
+# 1. 이미지에 넣을 로봇 모델과 드라이버 메시지 준비 (드라이버 워크스페이스가 빌드돼 있어야 함)
+cd ~/isaac_ros_ws/src/rby1_isaac_ros/docker
+./make_bundles.sh                      # 첫 두 줄에 찾은 드라이버 워크스페이스와 SDK 경로가 나옵니다
+ls bundles                             # a_1_0 … m_1_3 폴더 7개
 
-```bash
+# 2. 이 저장소의 이미지 레이어를 쓰도록 설정
+cp isaac_ros_common-config ~/.isaac_ros_common-config
+
+# 3. 이미지 만들고 컨테이너에 들어가기
 cd ~/isaac_ros_ws/src/isaac_ros_common
 ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh
 ```
-* 첫 빌드는 수십 분 걸립니다. 컨테이너에 들어간 뒤 패키지 빌드는 [README 2장 Step 4](../README.md#step-4-패키지-빌드-colcon-build)에 있습니다.
+
+* 멈추면 [9.4절 막힐 때](#94-막힐-때)의 표를 봅니다(PC에도 해당하는 항목이 있습니다).
+* 첫 빌드는 수십 분 걸립니다. 여기서 만드는 것은 **이미지**이고, 이 저장소의 패키지 빌드(`colcon build`)는 그 다음에
+  컨테이너 안에서 합니다([README 2장](../README.md#2--컨테이너에서-패키지-빌드)).
 * 최초 실행 시 도커 베이스 이미지 빌드가 진행되며, 완료 후 아래와 같은 컨테이너 셸이 뜨면 **환경 구성이 100% 성공**한 것입니다:
   ```bash
   admin@<hostname>:/workspaces/isaac_ros-dev$
   ```
 * 컨테이너 확인 후 `exit` 명령어로 빠져나옵니다.
+
+**워크스페이스를 다른 경로에 뒀을 때** — 이 문서의 명령은 `~/isaac_ros_ws`로 적혀 있습니다. 다른 곳이면 경로를 한 번 정해 두고,
+명령의 `~/isaac_ros_ws` 자리에 `$ISAAC_ROS_WS`를 씁니다. 나머지 경로는 스스로 찾습니다.
+
+```bash
+echo 'export ISAAC_ROS_WS=$HOME/<내 경로>' >> ~/.bashrc && source ~/.bashrc
+```
+
+| 무엇 | 어떻게 찾나 |
+|---|---|
+| 드라이버 워크스페이스 (`make_bundles.sh`) | 지금 터미널에 source된 것 → 없으면 홈 아래에서 빌드된 것 하나. 여러 개면 멈추고 `DRIVER_WS=<경로>`를 요구합니다 |
+| SDK의 `models` (`make_bundles.sh`) | 빌드된 드라이버가 링크한 SDK → 없으면 `~/sdk/rby1-sdk`. 직접 주려면 `RBY1_SDK_MODELS=<경로>` |
+| 이 저장소의 이미지 레이어 (`~/.isaac_ros_common-config`) | `isaac_ros_common` 옆의 `rby1_isaac_ros`. 두 저장소가 같은 `src/`에 있기만 하면 됩니다 |
 
 ### 8.2. 어디서나 한 번에 접속하는 스마트 단축 커맨드 등록 (`isaac-ros`)
 매번 긴 경로로 이동해서 스크립트를 칠 필요 없이 터미널 어디서든 컨테이너가 꺼져 있으면 자동 구동하고, 이미 켜져 있으면 즉시 추가 터미널로 연결하는 스마트 단축 함수를 `~/.bashrc`에 등록합니다:
@@ -194,7 +238,8 @@ cat << 'EOF' >> ~/.bashrc
 
 # Isaac ROS CLI Helper
 isaac-ros() {
-    local target_ws="${HOME}/isaac_ros_ws"
+    # Elsewhere than ~/isaac_ros_ws: export ISAAC_ROS_WS in ~/.bashrc, above this function.
+    local target_ws="${ISAAC_ROS_WS:-${HOME}/isaac_ros_ws}"
     # x86_64 on a PC, aarch64 on a Jetson: run_dev.sh names the container after it.
     local container_name="isaac_ros_dev-$(uname -m)-container"
 
@@ -217,7 +262,8 @@ source ~/.bashrc
 isaac-ros
 ```
 
-> ⚠️ **컨테이너에는 `admin`으로 들어가십시오 (root 아님).** 프롬프트가 `root@…`이면 잘못 들어온 것입니다.
+> [!IMPORTANT]
+> **컨테이너에는 `admin`으로 들어가십시오 (root 아님).** 프롬프트가 `root@…`이면 잘못 들어온 것입니다.
 > ROS 2(FastDDS)는 같은 PC의 프로세스끼리 **공유 메모리**로 데이터를 주고받는데, 받는 쪽이 만든 영역에
 > 보내는 쪽이 써야 합니다. 컨테이너의 root가 만든 영역에는 호스트의 일반 사용자 프로세스(예: RB-Y1
 > 드라이버)가 쓸 수 없어서, **서비스 탐색은 되는데 토픽이 안 오는** 증상이 납니다. `run_dev.sh`가 만드는
@@ -228,102 +274,135 @@ isaac-ros
 
 ---
 
-## 9. Jetson Orin (JetPack 6.x) 특이사항
+## 9. Jetson Orin (JetPack 6.x) 설치 순서
 
-Jetson Orin 환경의 경우 JetPack이 드라이버와 CUDA를 기본 제공하므로:
-> ⚠️ **Jetson에서 실제로 해 본 절차가 아닙니다.** 이 문서의 2~8장은 x86 PC에서 쓴 것이고, 아래는 Jetson에서 달라지는 곳을
-> 스크립트와 Dockerfile을 읽어 정리한 것입니다.
+JetPack이 그래픽 드라이버·CUDA·Docker를 이미 갖고 있어서, Jetson은 2~8장 대신 **이 장을 위에서 아래로** 따라 합니다.
 
-**이 문서를 Jetson에서 따라 할 때**
+> [!CAUTION]
+> **저장 공간이 모자라면 이미지를 받거나 만드는 중간에 실패합니다.** 이미지는 x86 PC 실측 약 37 GB(2026-10-15)이고, 받는 동안과
+> 빌드 중에는 그보다 더 필요합니다. Jetson에서의 크기는 재지 않았습니다. 시작하기 전에 남은 공간을 확인하십시오:
+> `df -h /var/lib/docker /var/lib/containerd`의 `Avail`. 2026-10-13에는 Jetson AGX Orin의 내장 저장소에서 이미지를 받다가
+> `no space left on device`로 멈췄습니다.
 
-| 장 | Jetson에서 |
-|---|---|
-| 2. NVIDIA 그래픽 드라이버 | **건너뜁니다.** JetPack에 들어 있습니다 |
-| 3. Docker, NVIDIA Container Toolkit | JetPack에 Docker와 NVIDIA 컨테이너 런타임이 들어 있으면 설치 줄은 건너뛰고, 사용자를 `docker` 그룹에 넣는 줄과 `git-lfs` 설치만 합니다. 그리고 **아래 CDI 설정을 추가로 합니다** |
-| 4. Docker Buildx | 합니다 (명령이 arm64 파일을 받습니다) |
-| 5. 디바이스 마운트 | 합니다 |
-| 6. `isaac_ros_common` 클론 | 합니다 |
-| 7. Dockerfile 사전 패치 | **하지 않습니다** (x86 전용) |
-| 8. 컨테이너 빌드, `isaac-ros` | 합니다. 컨테이너 이름은 `isaac_ros_dev-aarch64-container`가 됩니다 |
+> [!WARNING]
+> 2026-10-13에 Jetson AGX Orin에서 9.2절의 이미지 빌드 직전까지 따라 했고, 그때 나온 문제를 9.4절에 넣었습니다.
+> **이미지 빌드부터 그 뒤는 Jetson에서 확인되지 않았습니다.**
 
-**CDI 설정 (Jetson만)** — `run_dev.sh`가 Jetson에서는 GPU를 `nvidia.com/gpu=all,nvidia.com/pva=all`이라는 이름으로 요청합니다.
-이 이름은 CDI 설정 파일이 있어야 풀리므로, 없으면 컨테이너가 뜨지 않습니다.
+**먼저**: 호스트에 ROS 2 Humble, RB-Y1 SDK, 드라이버 워크스페이스를 빌드해 둡니다(드라이버 저장소 README).
+
+### 9.1. 호스트 준비
 
 ```bash
-cat /etc/docker/daemon.json                                           # "default-runtime": "nvidia" 가 있어야 합니다
+# 1. JetPack 확인 — R36, REVISION: 4.x (JetPack 6.1·6.2) 여야 합니다
+cat /etc/nv_tegra_release
+
+# 2. Docker 확인 — JetPack에 들어 있습니다. docker.io를 새로 설치하지 않습니다
+docker --version
+docker buildx version
+docker info 2>/dev/null | grep -i runtimes                 # nvidia 가 보여야 합니다
+df -h /var/lib/docker /var/lib/containerd                  # 남은 공간(Avail) — 9장 맨 위의 필요 용량 이상
+
+# 3. git-lfs, docker 그룹
+sudo apt update && sudo apt install -y git git-lfs
+sudo usermod -aG docker $USER
+newgrp docker
+
+# 4. CDI 설정 — run_dev.sh가 Jetson에서는 GPU를 nvidia.com/gpu=all 이라는 이름으로 요청합니다
 sudo nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
 sudo systemctl restart docker
 
-# PVA 허용 목록 패키지
+# 5. PVA 허용 목록 패키지
 sudo apt-get install -y software-properties-common
 sudo apt-key adv --fetch-key https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
 sudo add-apt-repository 'deb https://repo.download.nvidia.com/jetson/common r36.4 main'
 sudo apt-get update
 sudo apt-get install -y pva-allow-2
+
+# 6. 카메라 같은 장치를 컨테이너에 넘기기
+echo "-v /dev:/dev" > ~/.isaac_ros_dev-dockerargs
 ```
 
-명령의 출처는 NVIDIA의 [Jetson Setup for VPI](https://nvidia-isaac-ros.github.io/v/release-3.2/getting_started/hardware_setup/compute/jetson_vpi.html)입니다
-(2026-10-13에 대조). 저장소 주소의 `r36.4`는 JetPack 6.1·6.2 기준이므로, 다른 JetPack이면 그 문서를 다시 봅니다.
+- 2번에서 `docker buildx version`이 안 나오면 [4장](#4-docker-buildx-수동-설치-ubuntu-2204-전용)을 합니다(명령이 arm64 파일을 받습니다).
+- 4·5번의 출처는 NVIDIA의 [Jetson Setup for VPI](https://nvidia-isaac-ros.github.io/v/release-3.2/getting_started/hardware_setup/compute/jetson_vpi.html)입니다(2026-10-13 대조).
+  NVIDIA가 `release-3.2`에 적은 지원 버전은 JetPack 6.1·6.2뿐입니다.
 
-**JetPack 버전** — NVIDIA 문서가 `release-3.2`에 적은 지원 버전은 **JetPack 6.1과 6.2**뿐입니다(`cat /etc/nv_tegra_release`에
-`R36`, `REVISION: 4.x`). 그보다 새 JetPack에서 되는지는 확인된 바가 없습니다.
+### 9.2. 저장소 받기, 이미지 만들기
 
-**시뮬레이터** — 로봇 시뮬레이터 이미지는 x86 전용이라 Jetson에서는 뜨지 않습니다. Jetson에서는 실제 로봇에 붙거나, 같은 네트워크의
-PC에서 시뮬레이터를 켜고 드라이버의 `robot_ip`를 그 PC 주소로 둡니다.
+```bash
+# 1. 워크스페이스 위치를 한 번 정해 둡니다 (어디든 됩니다)
+echo 'export ISAAC_ROS_WS=$HOME/isaac_ros_ws' >> ~/.bashrc && source ~/.bashrc
 
-### 9.1. Jetson에서 이 저장소를 빌드할 때 (cuMotion, AprilTag)
+# 2. 저장소 두 개를 같은 src/ 에 받습니다
+mkdir -p $ISAAC_ROS_WS/src && cd $ISAAC_ROS_WS/src
+git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+git clone https://github.com/JeonSangMin-sw2/rby1_isaac_ros.git
 
-> ⚠️ **아래는 Jetson에서 실제로 해 본 절차가 아닙니다**(2026-10-12 작성). 지금까지의 빌드와 검증은 모두 x86_64 PC(RTX 5070)에서
-> 했습니다. x86과 달라지는 점을 저장소에서 찾아 적은 것이므로, 막히면 그 단계의 출력을 먼저 봅니다.
+# 3. 이미지에 넣을 로봇 모델과 드라이버 메시지 준비
+cd $ISAAC_ROS_WS/src/rby1_isaac_ros/docker
+./make_bundles.sh                      # 첫 두 줄에 찾은 드라이버 워크스페이스와 SDK 경로가 나옵니다
+ls bundles                             # a_1_0 … m_1_3 폴더 7개
 
-**x86과 달라지는 것**
+# 4. 이 저장소의 이미지 레이어를 쓰도록 설정
+cp isaac_ros_common-config ~/.isaac_ros_common-config
+
+# 5. 이미지 만들고 컨테이너에 들어가기 (처음에는 오래 걸립니다)
+cd $ISAAC_ROS_WS/src/isaac_ros_common && ./scripts/run_dev.sh
+```
+
+- 3번 대신 다른 PC에서 만든 `docker/bundles/`와 `docker/driver_msgs/`를 같은 자리에 복사해도 됩니다(아키텍처와 무관한 파일).
+- [7장](#7-중요-필수-x86_64-pc-dockerfile-사전-패치)의 Dockerfile 패치는 **하지 않습니다**(x86 전용).
+- 5번이 끝나면 프롬프트가 `admin@…:/workspaces/isaac_ros-dev$`가 됩니다. 컨테이너 이름은 `isaac_ros_dev-aarch64-container`입니다.
+- 다음부터 한 단어로 들어가려면 [8.2절](#82-어디서나-한-번에-접속하는-스마트-단축-커맨드-등록-isaac-ros)의 `isaac-ros` 함수를 등록합니다.
+
+### 9.3. 컨테이너에서 빌드하고 확인하기
+
+```bash
+# 컨테이너 안에서
+colcon build --base-paths src/rby1_isaac_ros --symlink-install --cmake-args -DBUILD_TESTING=OFF
+source install/setup.bash
+
+echo $TORCH_CUDA_ARCH_LIST                                   # 8.7
+python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_capability())"   # True (8, 7)
+python3 -c "import curobo.curobolib.kinematics, curobo.curobolib.geom"   # 다시 컴파일한다는 줄 없이 끝나야 합니다
+ros2 run rby1_cumotion replan_benchmark --runs 10            # 재계획 시간 — 로봇·ROS 없이
+ros2 run rby1_cumotion check_plan                            # 계획 1회, 로봇은 움직이지 않음 (cuMotion을 켠 뒤)
+```
+
+- 로봇 시뮬레이터 이미지는 x86 전용이라 Jetson에서는 뜨지 않습니다. 실제 로봇에 붙거나, 같은 네트워크의 PC에서 시뮬레이터를 켜고
+  드라이버의 `robot_ip`를 그 PC 주소로 둡니다.
+- 문서의 계획·추적 시간은 RTX 5070 값입니다. Jetson에서는 `replan_benchmark`로 다시 잽니다. 이동 중 회피는 재계획이 약 0.2초
+  안에 끝나는 것을 전제로 하므로(`avoid.lead`), 그보다 길면 `avoid.lead`를 늘리거나 `avoid.replan_seeds`·`replan_steps`를 줄입니다.
+
+### 9.4. 막힐 때
+
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| `containerd.io : Conflicts: containerd` (`apt install docker.io`) | Docker가 이미 있습니다 | `docker.io`를 빼고 `git-lfs`만 설치합니다. 한 줄에 같이 넣었다면 `git-lfs`도 설치되지 않은 것입니다 |
+| `RBY1 SDK models not found …` | SDK를 못 찾음 | `RBY1_SDK_MODELS=<rby1-sdk>/models ./make_bundles.sh` |
+| `Driver workspace: N found under …` | 빌드된 드라이버 워크스페이스가 없거나 여러 개 | `DRIVER_WS=<경로> ./make_bundles.sh` |
+| `Specified isaac does not exist: …` | `run_dev.sh -d`에 준 경로가 틀림 | `echo $ISAAC_ROS_WS`를 확인하고 `-d` 없이 실행 |
+| `Could not resolve Dockerfiles for target image ids: …cumotion` | `~/.isaac_ros_common-config`가 다른 경로를 가리킴(예전에 복사한 파일). 바로 윗줄 `Using configured docker search paths`에 그 경로가 나옵니다 | 9.2절 4번의 `cp`를 다시 합니다 |
+| `failed to extract layer … no space left on device` (이미지를 받는 중) | 오류에 나온 경로(`/var/lib/containerd` 또는 `/var/lib/docker`)의 디스크가 가득 참 | `df -h <그 경로>`로 확인. 9장 맨 위의 필요 용량만큼 비운 뒤(`docker system df`로 지울 수 있는 양 확인) 다시 실행 |
+| `No model bundles: run docker/make_bundles.sh …` (이미지 빌드 중) | 9.2절 3번을 건너뜀 | 3번을 하고 5번을 다시 실행 |
+| 이미지는 만들어졌는데 컨테이너가 안 뜸(`nvidia.com/gpu` 관련 오류) | CDI 설정이 없음 | 9.1절 4번 |
+| `… expected one occurrence to patch` (이미지 빌드 중) | NVIDIA가 apt 패키지를 새 버전으로 바꿈(x86에서도 똑같이 멈춥니다) | 메시지가 가리키는 파일을 보고 `docker/patches/`를 맞춥니다 |
+| `no kernel image is available for execution on the device` | 커널이 다른 GPU 세대로 컴파일됨 | `echo $TORCH_CUDA_ARCH_LIST`가 `8.7`인지 확인 |
+| 첫 계획이 실패 | 5초 안에 안 끝나면 MoveIt 플러그인이 포기합니다(x86에서도 13관절 그룹의 첫 계획은 9.4초) | 런치의 워밍업이 끝난 뒤 다시 보냅니다 |
+
+### 9.5. x86 PC와 달라지는 것
 
 | 항목 | x86_64 PC | Jetson Orin |
 |---|---|---|
 | 컨테이너 이름 | `isaac_ros_dev-x86_64-container` | `isaac_ros_dev-aarch64-container` — 문서의 `docker exec`·`docker stop` 명령에서 이름을 바꿉니다(`isaac-ros` 함수는 알아서 고릅니다) |
-| §7의 Dockerfile 패치 | 필요 | **하지 않습니다** |
+| 7장의 Dockerfile 패치 | 필요 | **하지 않습니다** |
 | 이미지 빌드 파일 | `docker/Dockerfile.cumotion` | **같은 파일.** `run_dev.sh`가 넘기는 `PLATFORM`(amd64·arm64)을 보고 아래 줄만 달라집니다 |
 | 바탕 이미지 | `tritonserver:24.08-py3` | `12.6.11-devel-aarch64-ubuntu22.04` (NVIDIA의 `Dockerfile.base`가 고릅니다) |
 | torch | 빌드 시점의 최신(버전 고정 없음) | `2.5.0a0 … nv24.08` (JetPack 6.1용으로 고정) |
 | NVIDIA apt 패키지 | cuRobo 3.2.5, cuMotion 3.2.7, AprilTag 3.2.5, image_proc 3.2.10 | **같은 버전**(2026-10-13에 저장소 목록 대조) |
 | `docker/patches/`의 패치 3개 | 적용 | **그대로 적용됩니다.** 고치는 파일 4개가 x86 패키지와 바이트 단위로 같습니다 |
-| cuRobo 커널을 컴파일하는 GPU 세대 | `9.0+PTX` (RTX 50 우회) | `8.7` — `docker/Dockerfile.cumotion`이 플랫폼을 보고 고릅니다. 손댈 것 없음 |
-| MoveIt (호스트) | `sudo apt install ros-humble-moveit` | 같음. 소스 빌드는 필요 없습니다 |
-| 계획·추적 시간 | 문서의 수치(RTX 5070) | **다시 재야 합니다.** 느리면 `config/cumotion.yaml`의 `avoid`·`planner` 값을 조정 |
-
-**순서**
-
-1. JetPack 버전 확인: `cat /etc/nv_tegra_release`. NVIDIA가 `release-3.2`에 적은 지원 버전은 JetPack 6.1·6.2입니다(위 9장).
-2. 저장 공간: 이미지가 약 40 GB입니다. NVMe SSD에 Docker 데이터가 있어야 합니다.
-3. 호스트에 ROS 2 Humble, 드라이버 워크스페이스(`~/ros2_driver_ws`), SDK(`~/sdk/rby1-sdk`)를 준비합니다(드라이버 저장소 README).
-4. 모델 파일 준비 — 둘 중 하나:
-   - Jetson에서 `docker/make_bundles.sh` 실행(드라이버 워크스페이스가 빌드돼 있고 `~/sdk/rby1-sdk/models`가 있어야 함)
-   - 다른 PC에서 만든 `docker/bundles/`와 `docker/driver_msgs/`를 같은 자리에 복사(아키텍처와 무관한 파일입니다)
-5. `cp docker/isaac_ros_common-config ~/.isaac_ros_common-config` 뒤 `run_dev.sh -d ~/isaac_ros_ws`. RealSense 레이어를 소스에서
-   빌드하므로 x86보다 오래 걸립니다.
-6. 컨테이너에서 패키지 빌드:
-   ```bash
-   colcon build --symlink-install --base-paths src/rby1_isaac_ros \
-       --packages-select rby1_cumotion rby1_apriltag rby1_isaac_ros_examples
-   ```
-
-**처음 켜기 전에 볼 것** (컨테이너)
-
-```bash
-echo $TORCH_CUDA_ARCH_LIST                                   # 8.7 이어야 합니다
-python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_capability())"   # True (8, 7)
-python3 -c "import curobo.curobolib.kinematics, curobo.curobolib.geom"   # 다시 컴파일한다는 줄 없이 끝나야 합니다
-ros2 run rby1_cumotion check_plan                            # 계획 1회, 로봇은 움직이지 않음 (cuMotion 기동 뒤)
-ros2 run rby1_cumotion replan_benchmark --runs 10            # 재계획 시간 — 로봇·ROS 없이
-```
-
-- 이미지 빌드가 `… expected one occurrence to patch`로 멈추면 NVIDIA가 apt 패키지를 새 버전으로 바꾼 것입니다(x86에서도 똑같이
-  멈춥니다). 그 메시지가 가리키는 파일을 보고 패치를 맞춥니다.
-- `no kernel image is available for execution on the device`가 나오면 커널이 다른 GPU 세대로 컴파일된 것입니다. 위 첫 줄을 확인합니다.
-- 첫 계획이 5초 안에 안 끝나면 MoveIt 플러그인이 포기합니다(x86에서도 13관절 그룹은 첫 계획이 9.4초였습니다). 런치의 워밍업이
-  끝난 뒤 다시 보냅니다.
-- 이동 중 장애물 회피는 재계획이 약 0.2초 안에 끝나는 것을 전제로 합니다(`avoid.lead`). `replan_benchmark` 결과가 그보다 길면
-  `avoid.lead`를 늘리거나 `avoid.replan_seeds`·`replan_steps`를 줄입니다.
+| cuRobo 커널을 컴파일하는 GPU 세대 | `9.0+PTX` (RTX 50 우회) | `8.7` — `docker/Dockerfile.cumotion`이 플랫폼을 보고 고릅니다 |
+| MoveIt (호스트) | `sudo apt install ros-humble-moveit` | 같음 |
+| 계획·추적 시간 | 문서의 수치(RTX 5070) | **다시 재야 합니다** |
 
 ---
 
@@ -365,7 +444,8 @@ TORCH_CUDA_ARCH_LIST=9.0+PTX
 그래서 이 프로젝트의 이미지는 커널을 내장하고, 컨테이너마다 3분씩 재컴파일하던 것이
 **import 1.7초**로 끝납니다.
 
-> ⚠️ cuRobo는 `load()` 호출 **전에** 무조건 `kinematics_fused_cu not found, JIT compiling...`을
+> [!NOTE]
+> cuRobo는 `load()` 호출 **전에** 무조건 `kinematics_fused_cu not found, JIT compiling...`을
 > 출력합니다. **캐시 미적중이 아닙니다.** 소요 시간으로 판단하십시오.
 
 ### 10.3. 캐시 디렉터리 권한

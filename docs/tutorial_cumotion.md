@@ -2,7 +2,8 @@
 
 손이 가야 할 자세를 토픽으로 보내면 GPU(cuMotion)가 장애물을 피하는 경로를 계획하고, RB-Y1 드라이버가 로봇을 움직입니다.
 
-> ⚠️ 시뮬레이터에서 확인한 절차입니다. 실제 로봇에서는 아직 돌려 보지 않았습니다.
+> [!NOTE]
+> 4.3의 "마커를 장애물로"(왕복 + 마커 장애물 + 머리 추적)는 실제 로봇에서 확인했습니다(2026-10-15). 나머지는 시뮬레이터에서 확인한 절차입니다.
 
 ---
 
@@ -45,7 +46,7 @@ flowchart TB
 | 항목 | 값 |
 |---|---|
 | 환경 | [env_setup_ubuntu_22_04.md](env_setup_ubuntu_22_04.md) (GPU 드라이버, Docker, `isaac-ros` 명령) |
-| 이미지와 빌드 | 저장소 [README 2장](../README.md#2--기본-개발-및-빌드-워크플로우) |
+| 이미지와 빌드 | 저장소 [README 2장](../README.md#2--컨테이너에서-패키지-빌드) |
 | 드라이버 | `~/ros2_driver_ws` 빌드 (드라이버 저장소 README) |
 
 호스트 터미널에서는 먼저 `source ~/ros2_driver_ws/install/setup.bash`를 합니다.
@@ -76,27 +77,31 @@ isaac-ros                                         # 컨테이너에 들어갑니
 ros2 launch rby1_cumotion demo.launch.py          # RViz 포함. 창 없이: cumotion.launch.py
 ```
 
-**런치가 펴져 있는 양팔과 몸통을 준비 자세로 옮깁니다 — 로봇이 움직입니다.** 1분쯤 뒤 `READY`가 나오면 됩니다.
+> [!CAUTION]
+> **런치가 펴져 있는 양팔과 몸통을 준비 자세로 옮깁니다 — 로봇이 움직입니다.** 이 런치가 떠 있는 동안 목표를 받아도 움직입니다.
+
+1분쯤 뒤 `READY`가 나오면 됩니다.
 
 ```
 [target_executor] waiting for 4x4 targets on /rby1/right_arm/target_pose (group=right_arm, tool=ee_right, frame=base)
 [target_executor] READY
 ```
 
-- 이 런치가 떠 있는 동안 목표를 받으면 로봇이 움직입니다.
 - 계획하는 팔은 하나입니다(기본 오른팔, [5.1](#51-계획하는-팔-robotgroup)).
 - 컨테이너 프롬프트는 `admin@…`이어야 합니다(`root@…`이면 [env_setup 8.2](env_setup_ubuntu_22_04.md)). 컨테이너는 처음 켠 터미널을 닫으면 삭제됩니다.
 - 접속할 로봇은 `rby1_driver/config/driver_parameters.yaml`의 `robot_ip`입니다.
 - 끌 때는 cuMotion 런치 → 드라이버 순서로 Ctrl+C.
 
-> ℹ️ **시뮬레이터로 해 보려면** 드라이버보다 먼저 켭니다(`robot_ip` 기본값 `127.0.0.1:50051`).
+> [!NOTE]
+> **시뮬레이터로 해 보려면** 드라이버보다 먼저 켭니다(`robot_ip` 기본값 `127.0.0.1:50051`).
 > ```bash
 > xhost +local:root
 > docker run --rm -it -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
 >     -p 50051:50051 rainbowroboticsofficial/rby1-sim:0.10.6-m_v1.2
 > ```
 
-> ℹ️ **영점에서 시작하려면** cuMotion 런치 전에 호스트에서 `ros2 run rby1_examples 06_zero_pose`. 아래 예제의 좌표는 영점에서
+> [!NOTE]
+> **영점에서 시작하려면** cuMotion 런치 전에 호스트에서 `ros2 run rby1_examples 06_zero_pose`. 아래 예제의 좌표는 영점에서
 > 시작해 런치가 만든 준비 자세 기준입니다.
 
 ### 3.1. 카메라의 마커를 쓸 때
@@ -217,8 +222,10 @@ ros2 run rby1_examples 16_target_shuttle_publisher          # 호스트. Ctrl+C�
 ros2 launch rby1_isaac_ros_examples cumotion_with_markers.launch.py marker_target:=true
 ```
 
-- **실행기가 `READY`이고 7번 마커가 보이면 바로 오른손이 움직입니다.** 마커 하나면 됩니다. 8번은 왼손용이라, 왼팔을 계획하도록
-  켰을 때만 쓰입니다([5.1](#51-계획하는-팔-robotgroup)).
+> [!CAUTION]
+> **실행기가 `READY`이고 7번 마커가 보이면 바로 오른손이 움직입니다.**
+
+- 마커 하나면 됩니다. 8번은 왼손용이라, 왼팔을 계획하도록 켰을 때만 쓰입니다([5.1](#51-계획하는-팔-robotgroup)).
 - 시작했는지는 런치 터미널에서 봅니다. 마커를 못 찾는 동안은 5초마다 `right_arm: no marker 7 yet …`, 찾으면
   `right_arm: target [x, y, z] in base (marker 7)`가 나옵니다. 마커가 보이는지는 `ros2 topic echo /rby1/marker_7/pose --once`.
 - 마커 번호와 손이 갈 위치(`offset`)는 `rby1_apriltag/config/target_tags.yaml`의 `marker_target:`에서 바꿉니다.
@@ -280,13 +287,50 @@ ros2 run rby1_moveit_objects scene add box shuttle_box --xyz 0.413 -0.367 1.266 
 
 **마커를 장애물로** — 카메라에 7번 마커가 보이면 그 자리에 상자가 놓이고, 왕복하는 손이 피해서 갑니다.
 
+하나씩 따로 켭니다. **순서대로**, 터미널마다 하나씩입니다.
+
 ```bash
-# 3.1처럼 켠 상태(기본값: 마커 좌표만 나옴)에서 — 호스트
+# 1. 호스트 — 드라이버
+ros2 launch rby1_driver rby1_ros2_driver.launch.py
+
+# 2. 호스트 — 카메라
+ros2 launch rby1_additional_tools camera.launch.py camera:=realsense
+
+# 3. 컨테이너 — cuMotion. READY 가 나올 때까지 기다립니다 (준비 자세로 움직입니다)
+isaac-ros
+ros2 launch rby1_cumotion cumotion.launch.py
+
+# 4. 컨테이너 — 마커 검출. 머리도 마커를 따라가게 하려면 follow_head:=true 를 붙입니다
+isaac-ros
+ros2 launch rby1_apriltag apriltag.launch.py follow_head:=true
+
+# 5. 호스트 — 그리퍼를 붙임 (없으면 피하는 길이 INVALID_MOTION_PLAN 으로 거절됩니다)
+ros2 launch rby1_moveit_objects objects.launch.py config:=gripper.yaml
+
+# 6. 호스트 — 7번 마커 자리에 상자
 ros2 launch rby1_moveit_objects point_object.launch.py pose_topic:=/rby1/marker_7/pose
-ros2 run rby1_examples 16_target_shuttle_publisher --ros-args -p period:=8.0      # 다른 터미널
-ros2 run rby1_moveit_objects scene remove point_object        # 끝난 뒤 (런치를 먼저 끕니다)
+
+# 7. 호스트 — 왕복
+ros2 run rby1_examples 16_target_shuttle_publisher --ros-args -p period:=8.0
 ```
 
+끌 때는 7 → 6 → 5 → 4 → 3 → 2 → 1 순서로 Ctrl+C. 상자가 남았으면 `ros2 run rby1_moveit_objects scene remove point_object`.
+
+> [!IMPORTANT]
+> **3번이 `READY`가 된 뒤에 4번을 켭니다.** 머리 추적이 먼저 켜져 있으면 3번의 준비 자세 이동이 거절됩니다
+> (`Stream: stream channel 'arm' is not open`). 같은 이유로, 머리 추적이 켜져 있는 동안에는 4.1의 `robot_joint` 명령이 듣지 않습니다:
+> 4번을 끄고 보냅니다.
+
+> [!CAUTION]
+> **마커를 손 목표로 보내는 것(`marker_target`, `marker_shuttle`)과 같이 켜지 않습니다.** 켜면 손이 마커를 피하지 않고 마커로 가고,
+> 왕복 목표가 계속 밀려납니다(`REPLACED by a newer target`가 이어짐). 예제 런치(3.1)를 쓴다면 `marker_target:=true`를 빼고 켭니다.
+
+> [!WARNING]
+> 머리 추적은 카메라가 **로봇 머리에 달려 있을 때만** 켭니다. 카메라는 책상에 있고 로봇은 시뮬레이터라면 `follow_head`를 빼십시오:
+> 머리가 돌아도 영상이 그대로라 머리가 끝까지 돌고, 상자도 머리를 따라 움직입니다.
+
+- 5번이 `/apply_planning_scene did not answer`로 끝나면 한 번 더 실행합니다. 붙으면 `6 object(s) from …`가 나오고, 이 런치를 끄면
+  그리퍼도 떼어집니다(켜 둡니다).
 - 마커는 손이 멈춰 있을 때 보여 줍니다. 팔 위나 움직이는 손 바로 앞에 놓이면 팔이 멈추고 이후 목표도 거절됩니다(위 표).
 - 마커가 1 cm 넘게 움직이면 물체도 옮겨집니다. 마커가 안 보이게 되어도 물체는 마지막 자리에 남습니다.
 - 일정 시간 안 보이면 지워지게 하려면 `rby1_moveit_objects/config/point_object.yaml`의 `remove_after`에 초를 넣습니다(`0.0`: 지우지 않음).

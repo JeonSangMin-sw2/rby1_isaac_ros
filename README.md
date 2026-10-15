@@ -15,28 +15,21 @@ Rainbow Robotics의 로봇 플랫폼(RBY1 등)에서 NVIDIA Isaac ROS의 하드�
 * 📌 **Ubuntu 24.04 LTS (ROS 2 Jazzy / release-4.0+ 권장)**:  
   👉 **[docs/env_setup_ubuntu_24_04.md](docs/env_setup_ubuntu_24_04.md)**
 
----
+22.04 문서는 **저장소 클론, 이미지 만들기, 첫 컨테이너 진입, `isaac-ros` 등록까지** 다룹니다. 그 문서를 끝낸 뒤 아래 2장으로 옵니다.
+(순서: 드라이버 워크스페이스 빌드 → 환경 구성 문서 → 아래 2장. 이미지에 넣을 로봇 모델을 드라이버 워크스페이스에서 가져오기 때문입니다.)
 
-## 2. 🧩 기본 개발 및 빌드 워크플로우
-
-호스트 설정이 완료되었다면 아래 단계에 따라 필요한 패키지를 구성하고 빌드합니다.
-
-### Step 1. 필요한 Isaac ROS 패키지 클론 (`src/` 경로)
-
-#### 🔹 Ubuntu 22.04 LTS 호스트 (ROS 2 Humble / release-3.2)
-소스로 받는 것은 **도커 개발 래퍼 `isaac_ros_common` 하나**입니다. cuMotion, AprilTag(`isaac_ros_apriltag`), 영상 보정
+소스로 받는 NVIDIA 저장소는 **`isaac_ros_common` 하나**입니다. cuMotion, AprilTag(`isaac_ros_apriltag`), 영상 보정
 (`isaac_ros_image_proc`)은 NVIDIA apt 패키지로 이 저장소의 이미지 레이어(`docker/Dockerfile.cumotion`)에 들어갑니다.
 
-```bash
-cd ~/isaac_ros_ws/src
-git clone -b release-3.2 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git   # 환경 구성 단계에서 클론하지 않은 경우
-```
-
+> [!NOTE]
 > 예전 방식대로 `isaac_ros_apriltag`, `isaac_ros_image_pipeline`을 `src/`에 클론해 빌드했다면, 그 빌드 결과(`install/`)가
 > apt 설치본보다 우선합니다. 지우거나 `install/`에서 빼 두십시오(소스 폴더는 남아 있어도 `rby1_isaac_ros`만 빌드하면 상관없음).
 
-#### 🔹 Ubuntu 24.04 LTS 호스트 (ROS 2 Jazzy / release-4.0 이상)
-> ⚠️ 이 저장소의 이미지 레이어는 Humble(release-3.2) 기준입니다. 아래 Jazzy 절차는 확인하지 않았습니다.
+<details>
+<summary>Ubuntu 24.04 호스트에서 추가로 클론하는 것 (확인하지 않은 절차)</summary>
+
+> [!WARNING]
+> 이 저장소의 이미지 레이어는 Humble(release-3.2) 기준입니다. 아래 Jazzy 절차는 확인하지 않았습니다.
 ```bash
 cd ~/isaac_ros_ws/src
 
@@ -50,32 +43,35 @@ git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pip
 # [Visual SLAM 필요 시]
 # git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam.git
 ```
+</details>
 
 ---
 
-### Step 2. 이미지 준비, 컨테이너 구동 및 세션 진입
+## 2. 🧩 컨테이너에서 패키지 빌드
 
-이 저장소는 cuMotion·AprilTag·영상 보정을 이미지 레이어 하나(`docker/Dockerfile.cumotion`)로 넣습니다. **처음 한 번**, 컨테이너를
-켜기 전에 호스트에서 아래를 합니다. 그러면 다음 `isaac-ros`(= `run_dev.sh`)가 이미지를 만들고 들어갑니다(첫 빌드는 수십 분).
+여기서부터는 환경 구성 문서에서 만든 컨테이너 **안에서** 합니다. NVIDIA 패키지가 그 이미지에 들어 있으므로, 이미지를 만들기 전에는
+아래 빌드가 되지 않습니다.
+
+### Step 1. 컨테이너에 들어가기
+
+```bash
+isaac-ros
+```
+> [!TIP]
+> (수동 실행 시: `cd ~/isaac_ros_ws/src/isaac_ros_common && ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh`)  
+> 실행 완료 시 컨테이너 프롬프트(`admin@<hostname>:/workspaces/isaac_ros-dev$`)로 자동 진입합니다.
+
+환경 구성 8.1절의 이미지 준비를 건너뛰었다면, 컨테이너를 끄고 호스트에서 아래를 한 뒤 `isaac-ros`를 다시 실행합니다(이 저장소의
+레이어만 더 만듭니다).
 
 ```bash
 cd ~/isaac_ros_ws/src/rby1_isaac_ros/docker && ./make_bundles.sh              # 로봇 모델 파일 준비 (드라이버 워크스페이스가 빌드돼 있어야 함)
 cp ~/isaac_ros_ws/src/rby1_isaac_ros/docker/isaac_ros_common-config ~/.isaac_ros_common-config
 ```
 
-`isaac_ros_common`은 실행 중인 하드웨어(x86 PC 또는 Jetson ARM64)를 자동으로 감지하여 최적의 GPU 가속 컨테이너를 구동합니다.
-
-#### ⚡ 스마트 단축 커맨드 사용 (`isaac-ros` 권장)
-환경 구성 단계에서 `~/.bashrc`에 단축 함수를 등록해 두었으므로, 어느 디렉터리에 있든 터미널에서 아래 한 단어로 컨테이너에 즉시 접속할 수 있습니다:
-```bash
-isaac-ros
-```
-> (수동 실행 시: `cd ~/isaac_ros_ws/src/isaac_ros_common && ISAAC_ROS_WS=$HOME/isaac_ros_ws ./scripts/run_dev.sh`)  
-> 실행 완료 시 컨테이너 프롬프트(`admin@<hostname>:/workspaces/isaac_ros-dev$`)로 자동 진입합니다.
-
 ---
 
-### Step 3. 컨테이너 내부 의존성 설치 (`rosdep`)
+### Step 2. 컨테이너 내부 의존성 설치 (`rosdep`)
 컨테이너 내부에서 패키지가 요구하는 모든 NITROS 및 GXF 가속 라이브러리를 공식 패키지 저장소로부터 자동 해결합니다:
 
 ```bash
@@ -89,13 +85,14 @@ rosdep install --from-paths src --ignore-src -r -y
 
 ```
 
+> [!NOTE]
 > 카메라는 컨테이너가 아니라 **호스트에서** 켭니다. 영상은 토픽(`/camera/image_raw`, `/camera/camera_info`)으로 컨테이너에
 > 넘어옵니다 — 드라이버 저장소의 `rby1_additional_tools`(`camera.launch.py`: 웹캠·파일·RealSense). RealSense를 쓰면
 > 호스트에 `sudo apt install ros-humble-librealsense2`(realsense-ros는 필요 없음).
 
 ---
 
-### Step 4. 패키지 빌드 (`colcon build`)
+### Step 3. 패키지 빌드 (`colcon build`)
 빌드 시간을 단축하고 테스트 패키지 컴파일 에러를 방지하기 위해 테스트 플래그를 비활성화(`BUILD_TESTING=OFF`)하고 필요한 패키지 단위로 빌드합니다:
 
 ```bash
@@ -109,6 +106,7 @@ source /opt/ros/humble/setup.bash             # Jazzy의 경우 /opt/ros/jazzy/s
 source /workspaces/isaac_ros-dev/install/setup.bash
 ```
 
+> [!TIP]
 > 빌드는 여기서 한 번이면 됩니다. 이후 컨테이너에 들어올 때마다 자동으로 source되고, 튜토리얼에서는 빌드 명령을 다시 적지 않습니다.
 > `--symlink-install`로 빌드했으므로 설정 파일(`cumotion.yaml`, `target_tags.yaml`)과 런치 파일은 **소스를 고치면 다시 빌드하지 않아도**
 > 적용됩니다. C++ 소스(`rby1_apriltag`)를 고쳤을 때만 다시 빌드합니다.
@@ -155,8 +153,13 @@ ros2 launch rby1_driver rby1_ros2_driver.launch.py                            # 
 ros2 launch rby1_cumotion demo.launch.py                                      # 컨테이너: 준비 → cuMotion → 실행기 (RViz)
 ros2 run rby1_examples 16_target_shuttle_publisher                            # 호스트: 예제 — 두 지점 왕복, Ctrl+C로 끝 (튜토리얼 4.2)
 ```
+
+> [!CAUTION]
+> cuMotion 런치가 떠 있으면 목표를 받을 때 **로봇이 움직입니다.**
+
+> [!IMPORTANT]
 > 컨테이너 터미널은 `isaac-ros`(= `docker exec -u admin`)로 엽니다. `root@…` 셸에서는 드라이버 토픽이 오지 않습니다.
-> cuMotion 런치가 떠 있으면 목표를 받을 때 **로봇이 움직입니다.** 속도·그룹 등 설정은 `rby1_cumotion/config/cumotion.yaml` 한 곳. 문제가 생기면 그 터미널의 메시지가 할 일을 알려 줍니다(자세히: [developer_manual 트러블슈팅](docs/developer_manual.md#12-트러블슈팅)).
+> 속도·그룹 등 설정은 `rby1_cumotion/config/cumotion.yaml` 한 곳. 문제가 생기면 그 터미널의 메시지가 할 일을 알려 줍니다(자세히: [developer_manual 트러블슈팅](docs/developer_manual.md#12-트러블슈팅)).
 > 드라이버(`~/ros2_driver_ws`)는 빌드된 상태여야 합니다 — 드라이버 저장소 README.
 
 ---
@@ -172,6 +175,7 @@ ros2 topic echo /rby1/marker/pose --once                                      # 
 ros2 launch rby1_apriltag apriltag.launch.py follow_head:=true                # 컨테이너: 검출 + 머리가 마커를 따라감 (드라이버 필요)
 ros2 launch rby1_apriltag marker_target.launch.py ids:=7,8                    # 컨테이너: 검출 + 마커를 팔 목표로 → 손이 마커로 감 (cuMotion 기동 필요)
 ```
+> [!TIP]
 > 마커 크기(`size`, 검은 사각형 한 변 m)와 찾을 번호(`target_ids`)는 `rby1_apriltag/config/target_tags.yaml` — 이번 실행만 바꾸려면 `size:=0.08 ids:=7,8`. cuMotion과 한 번에 켜서 손이 마커를 따라가게 하는 것은 [docs/tutorial_cumotion.md 3.1과 4.2](docs/tutorial_cumotion.md#31-카메라의-마커를-쓸-때). 자세히: [docs/tutorial_apriltag.md](docs/tutorial_apriltag.md).
 
 
@@ -179,7 +183,8 @@ ros2 launch rby1_apriltag marker_target.launch.py ids:=7,8                    # 
 
 ## 4. 🛠️ 컨테이너 세션 관리 치트시트
 
-> ℹ️ Jetson에서는 아래 명령과 다른 문서의 `x86_64`를 `aarch64`로 바꿉니다(`isaac_ros_dev-aarch64-container`).
+> [!NOTE]
+> Jetson에서는 아래 명령과 다른 문서의 `x86_64`를 `aarch64`로 바꿉니다(`isaac_ros_dev-aarch64-container`).
 
 * **멀티 터미널 추가 접속 (호스트 터미널에서 실행)**:
   컨테이너가 실행 중인 상태에서 새 터미널 창을 열고 `isaac-ros`를 입력하면 자동으로 실행 중인 컨테이너에 attach됩니다:
@@ -187,8 +192,11 @@ ros2 launch rby1_apriltag marker_target.launch.py ids:=7,8                    # 
   isaac-ros
   # 또는 직접 명령어: docker exec -it -u admin -w /workspaces/isaac_ros-dev isaac_ros_dev-x86_64-container bash
   ```
-  > ⚠️ `-u admin`을 빼면 root로 들어가고, root 셸에서는 호스트 ROS 노드(예: RB-Y1 드라이버)의 토픽이 오지 않습니다.
-  > 예전에 등록한 `isaac-ros` 함수에 `-u admin`이 없다면 [env_setup 8.2](docs/env_setup_ubuntu_22_04.md)대로 고치십시오.
+
+> [!WARNING]
+> `-u admin`을 빼면 root로 들어가고, root 셸에서는 호스트 ROS 노드(예: RB-Y1 드라이버)의 토픽이 오지 않습니다.
+> 예전에 등록한 `isaac-ros` 함수에 `-u admin`이 없다면 [env_setup 8.2](docs/env_setup_ubuntu_22_04.md)대로 고치십시오.
+
 * **세션 종료**: 컨테이너 셸에서 `exit`
 * **컨테이너 강제 중지**: `docker stop isaac_ros_dev-x86_64-container`
 * **💡 의존성 보존 및 도커 이미지 커밋 (매번 apt 재설치 방지)**:

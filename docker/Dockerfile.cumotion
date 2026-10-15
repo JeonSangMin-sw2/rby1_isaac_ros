@@ -112,10 +112,12 @@ RUN if [ ! -f /opt/rby1/driver_msgs/src/rby1_msgs/package.xml ]; then \
 COPY bundles ${RBY1_BUNDLES}
 # docker/bundles is gitignored, so a fresh clone holds only .gitkeep here. Fail
 # the build instead of shipping an image whose $RBY1_BUNDLES is silently empty.
+# Then make readable only what is not yet: chmod -R touched every file, and a layer
+# that changes a file's mode stores the whole file again (the bundles twice, 293 MB).
 RUN if [ -z "$(find ${RBY1_BUNDLES} -mindepth 2 -maxdepth 2 -name model.json)" ]; then \
         echo "No model bundles: run docker/make_bundles.sh on the host first" >&2; exit 1; \
     fi \
-    && chmod -R a+rX ${RBY1_BUNDLES}
+    && find ${RBY1_BUNDLES} '(' '(' -type d ! -perm -a+rx ')' -o '(' -type f ! -perm -a+r ')' ')' -exec chmod a+rX {} +
 
 # Interactive shells see the workspace build too, so `ros2 run rby1_cumotion ...`
 # works right after entering the container. The base image's bash.bashrc

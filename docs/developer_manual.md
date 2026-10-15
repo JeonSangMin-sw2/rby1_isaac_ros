@@ -152,8 +152,10 @@ bundles/m_1_2/                    31 MB
   기대 0.320 m → 0.3216 m, 15 Hz 입력 그대로 15 Hz. **Isaac ROS 노드는 reliable로 구독**하므로 best-effort 발행자의 영상은
   받지 못함(처음 그렇게 만들었다가 QoS 불일치)
 
-`docker/Dockerfile.cumotion`은 isaac_ros_common 레이어 체인(`x86_64 → ros2_humble → realsense → cumotion`)의
-마지막 레이어입니다. `docker/isaac_ros_common-config`가 체인을 설정합니다.
+`docker/Dockerfile.cumotion`은 isaac_ros_common 레이어 체인(`x86_64 → ros2_humble → cumotion`)의
+마지막 레이어입니다. `docker/isaac_ros_common-config`가 체인을 설정합니다. 10/15에 `realsense` 레이어를 뺐습니다: 카메라는
+호스트에서 켜고 토픽만 넘어오므로 컨테이너 안의 librealsense(소스 빌드, x86에서 1.5 GB)는 쓰이지 않았습니다. 같은 날 모델 파일
+층이 두 번 저장되던 것(권한을 바꾸는 `chmod -R`이 파일 전체를 다시 저장, 293 MB)도 읽을 수 없는 파일만 고치게 바꿨습니다.
 
 cuRobo 커널을 컴파일할 GPU 세대(`TORCH_CUDA_ARCH_LIST`)는 플랫폼별로 다릅니다(10/12): `build_image_layers.sh`가 모든 레이어에 넘기는
 `PLATFORM`(amd64 / arm64)으로 Dockerfile 맨 위의 두 단계 `cuda_amd64`(`9.0+PTX`, RTX 50 우회)와 `cuda_arm64`(`8.7`, Jetson Orin) 중
@@ -179,7 +181,8 @@ cuRobo 커널을 컴파일할 GPU 세대(`TORCH_CUDA_ARCH_LIST`)는 플랫폼별
 
 패치는 모두 멱등이며, 대상 문자열이 정확히 1회 일치하지 않으면 **빌드를 실패시킵니다.**
 
-> ⚠️ **`colcon build --install-base /opt/ros/humble` 금지.** colcon이 배포판 `setup.sh`를 자기 것으로 덮어써
+> [!CAUTION]
+> **`colcon build --install-base /opt/ros/humble` 금지.** colcon이 배포판 `setup.sh`를 자기 것으로 덮어써
 > 배포판 환경 훅이 사라지고, URDF를 읽는 모든 노드가 `pluginlib::LibraryLoadException`으로 죽습니다.
 > 빌드 단계가 `setup.sh` 원본 여부와 `liburdf_xml_parser.so` 의존성을 검사합니다.
 
@@ -701,7 +704,8 @@ done
 
 후보마다 10회 이상 쟀습니다(로봇·ROS 없이 cuRobo만 돌린 것과 시뮬레이터). 실제 로봇 값은 없습니다.
 
-> 이 문서가 "기록"으로 가리키는 `~/isaac_ros_ws/cumotion_artifacts/`(측정 스크립트와 원본 로그)는 10/13에 사용자 요청으로 지웠습니다.
+> [!NOTE]
+> 이 문서가 "기록"으로 가리키는 `~/isaac_ros_ws/cumotion_artifacts/`(측정 스크립트와 원본 로그)는 10/12에 사용자 요청으로 지웠습니다.
 > 아래 수치는 남아 있지만 원본으로 다시 확인할 수는 없습니다. 다시 재려면 스크립트부터 새로 만들어야 합니다.
 
 **① 첫 계획 시간** (지금 기본 경로: MoveIt + cuMotion 플래너 노드, 142~153 ms. 10/08 재측정 151~196 ms, n=12)
@@ -1043,7 +1047,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `nothing on ee_right is in cuMotion's model …` | 손 끝에 붙인 모듈이 없음(팔 모델은 `ee`에서 끝남) | ✔ | 위와 같음, 또는 `robot.body_ends_at_tool: false` |
 | 링크에 붙인 물체 | cuMotion은 손 끝에 단단히 붙은 것만(덮는 구, §6), 머리는 덮개 구, 그 밖은 무시. MoveIt(OMPL)은 전부 반영 |
 | 이동 시간 | 실제 약 15% 김 (드라이버가 웨이포인트마다 전송 후 잠듦) |
-| Jetson Orin, CUDA 12.8+ | 미검증 / PTX 우회 중. Jetson에서 달라지는 것과 순서는 `env_setup_ubuntu_22_04.md` 9.1 (실행해 보지 않은 절차) |
+| Jetson Orin, CUDA 12.8+ | 미검증 / PTX 우회 중. Jetson 설치 순서와 달라지는 것은 `env_setup_ubuntu_22_04.md` 9장 (이미지 빌드부터는 Jetson에서 확인 전) |
 
 ### 12. 트러블슈팅
 
@@ -1058,7 +1062,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | 이미지 빌드가 `No model bundles: run docker/make_bundles.sh on the host first` | `make_bundles.sh`를 건너뜀 | 실행 후 다시 빌드 (메시지가 안내) |
 | `nvidia-smi`가 `Driver/library version mismatch`, `Failed to initialize NVML` | GPU 드라이버 문제 | [env_setup 10장](env_setup_ubuntu_22_04.md) |
 | 패키지 빌드가 `[Errno 17] File exists: ... resource/rby1_cumotion` | 이전 빌드 잔재 | `rm -rf build/rby1_cumotion install/rby1_cumotion` 후 다시 빌드 |
-| `ros2 run rby1_cumotion ...`이 `Package not found` | 워크스페이스 빌드 전 | README 2장 Step 4 |
+| `ros2 run rby1_cumotion ...`이 `Package not found` | 워크스페이스 빌드 전 | README 2장 Step 3 |
 | 컨테이너 프롬프트가 `root@…` | `-u admin` 없이 들어옴 | 나가서 `isaac-ros`로 다시. `isaac-ros`가 root로 들어가면 `~/.bashrc`의 함수를 [env_setup 8.2](env_setup_ubuntu_22_04.md)대로(같은 함수가 두 번 있으면 뒤의 것이 쓰임). 기동 중에 root면 `read_robot`이 원인을 로그에 붙임 |
 | `RTPS_TRANSPORT_SHM Error ... open_and_lock_file failed` 뒤 토픽이 안 옴 | 강제로 끈 ROS 프로세스들의 공유 메모리 잔재 | 호스트에서 `fastdds shm clean` 후 그 노드를 다시 실행 |
 | `Couldn't parse parameter override rule ... Sequence should be of same type` | 예제의 목록 파라미터(`16_target_shuttle_publisher`의 `point_a`·`point_b`)에 정수가 섞임. rclpy가 노드 코드 전에 실패 | 모든 값을 `1.0`처럼 소수로 |

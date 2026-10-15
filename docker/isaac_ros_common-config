@@ -4,7 +4,10 @@
 #
 #   cp docker/isaac_ros_common-config ~/.isaac_ros_common-config
 #
-# RealSense comes from NVIDIA's own layer, which source-builds librealsense and
-# packages realsense2_camera; do not also apt-install it.
-CONFIG_IMAGE_KEY=ros2_humble.realsense.cumotion
-CONFIG_DOCKER_SEARCH_DIRS=("${HOME}/isaac_ros_ws/src/rby1_isaac_ros/docker")
+# No realsense layer: cameras run on the host (rby1_additional_tools) and only their
+# topics reach the container. That layer source-builds librealsense (1.5 GB, and
+# long on a Jetson) for nothing here.
+CONFIG_IMAGE_KEY=ros2_humble.cumotion
+# Relative to isaac_ros_common/scripts (build_image_layers.sh resolves it there), so
+# it holds wherever the workspace is, as long as both repositories sit side by side in src/.
+CONFIG_DOCKER_SEARCH_DIRS=("../../rby1_isaac_ros/docker")
