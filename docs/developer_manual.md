@@ -1047,7 +1047,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | `nothing on ee_right is in cuMotion's model …` | 손 끝에 붙인 모듈이 없음(팔 모델은 `ee`에서 끝남) | ✔ | 위와 같음, 또는 `robot.body_ends_at_tool: false` |
 | 링크에 붙인 물체 | cuMotion은 손 끝에 단단히 붙은 것만(덮는 구, §6), 머리는 덮개 구, 그 밖은 무시. MoveIt(OMPL)은 전부 반영 |
 | 이동 시간 | 실제 약 15% 김 (드라이버가 웨이포인트마다 전송 후 잠듦) |
-| Jetson Orin, CUDA 12.8+ | 미검증 / PTX 우회 중. Jetson 설치 순서와 달라지는 것은 `env_setup_ubuntu_22_04.md` 9장 (이미지 빌드부터는 Jetson에서 확인 전) |
+| Jetson Orin, CUDA 12.8+ | 미검증 / PTX 우회 중. Jetson 설치는 `env_setup_jetson.md`, PC와 달라지는 것은 [환경 구성 5](#5-jetson과-x86-pc) (이미지 빌드부터는 Jetson에서 확인 전) |
 
 ### 12. 트러블슈팅
 
@@ -1060,10 +1060,10 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | 증상 | 원인 | 해결 |
 |---|---|---|
 | 이미지 빌드가 `No model bundles: run docker/make_bundles.sh on the host first` | `make_bundles.sh`를 건너뜀 | 실행 후 다시 빌드 (메시지가 안내) |
-| `nvidia-smi`가 `Driver/library version mismatch`, `Failed to initialize NVML` | GPU 드라이버 문제 | [env_setup 10장](env_setup_ubuntu_22_04.md) |
+| `nvidia-smi`가 `Driver/library version mismatch`, `Failed to initialize NVML` | GPU 드라이버 문제 | [환경 구성 6](#6-gpu-문제-해결) |
 | 패키지 빌드가 `[Errno 17] File exists: ... resource/rby1_cumotion` | 이전 빌드 잔재 | `rm -rf build/rby1_cumotion install/rby1_cumotion` 후 다시 빌드 |
 | `ros2 run rby1_cumotion ...`이 `Package not found` | 워크스페이스 빌드 전 | README 2장 Step 2 |
-| 컨테이너 프롬프트가 `root@…` | `-u admin` 없이 들어옴 | 나가서 `isaac-ros`로 다시. `isaac-ros`가 root로 들어가면 `~/.bashrc`의 함수를 [env_setup 8.2](env_setup_ubuntu_22_04.md)대로(같은 함수가 두 번 있으면 뒤의 것이 쓰임). 기동 중에 root면 `read_robot`이 원인을 로그에 붙임 |
+| 컨테이너 프롬프트가 `root@…` | `-u admin` 없이 들어옴 | 나가서 `isaac-ros`로 다시. `isaac-ros`가 root로 들어가면 `~/.bashrc`의 함수를 [env_setup 7.2](env_setup_ubuntu_22_04.md#72-isaac-ros-명령-등록)대로(같은 함수가 두 번 있으면 뒤의 것이 쓰임). 기동 중에 root면 `read_robot`이 원인을 로그에 붙임 |
 | `RTPS_TRANSPORT_SHM Error ... open_and_lock_file failed` 뒤 토픽이 안 옴 | 강제로 끈 ROS 프로세스들의 공유 메모리 잔재 | 호스트에서 `fastdds shm clean` 후 그 노드를 다시 실행 |
 | `Couldn't parse parameter override rule ... Sequence should be of same type` | 예제의 목록 파라미터(`16_target_shuttle_publisher`의 `point_a`·`point_b`)에 정수가 섞임. rclpy가 노드 코드 전에 실패 | 모든 값을 `1.0`처럼 소수로 |
 | 손은 되돌아왔는데 팔 모양이 비틀림 | 팔을 곧게 편 자세(영점)에서 움직임 (§4.1) | `robot.ready_if_straight` 확인(기본 켜짐). 지금 모양은 `robot_joint` 관절 명령으로 |
@@ -1450,3 +1450,187 @@ colcon test --base-paths src/rby1_isaac_ros/rby1_apriltag --packages-select rby1
 # 호스트
 colcon test --packages-select rby1_additional_tools                                          # gtest: 카메라 모델(보정 파일 두 형식, 크기 맞춤)
 ```
+
+## 환경 구성
+
+설치 문서([PC](env_setup_ubuntu_22_04.md), [Jetson](env_setup_jetson.md))에는 해야 하는 것만 두고, 문제가 생겼을 때 볼 것과 배경은 여기에 둡니다.
+
+### 1. 그래픽 드라이버 설치 뒤 화면이 안 나올 때
+
+버전을 직접 골라 설치(예: 580)하면 디스플레이 서버나 모니터 포트 설정에 따라 화면이 안 나올 수 있습니다. 그래서 설치 문서는
+`ubuntu-drivers install`(우분투 권장 드라이버)을 씁니다.
+
+1. **외장 GPU로 출력 고정 (노트북·하이브리드 그래픽)**: 내장 그래픽과 충돌하면 `sudo prime-select nvidia` 후 재부팅.
+2. **Secure Boot**: BIOS에서 켜져 있으면 커널이 새 드라이버를 막아 화면이 꺼질 수 있습니다. BIOS에서 `Disabled`.
+3. **되돌리기**: `Ctrl + Alt + F3`으로 텍스트 터미널에 들어가 아래를 실행하면 기본 화면으로 돌아옵니다.
+   ```bash
+   sudo apt purge "*nvidia*" -y
+   sudo reboot
+   ```
+
+### 2. 설치·이미지 빌드가 멈출 때
+
+PC와 Jetson 공통입니다(Jetson 표시가 있는 줄만 Jetson 해당).
+
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| `containerd.io : Conflicts: containerd` (`apt install docker.io`) | Docker가 이미 있음(Docker 공식 저장소로 설치됨) | `docker.io`를 빼고 `git-lfs`만 설치. 한 줄에 같이 넣었다면 `git-lfs`도 설치되지 않은 것 |
+| `RBY1 SDK models not found …` | `make_bundles.sh`가 SDK를 못 찾음 | `RBY1_SDK_MODELS=<rby1-sdk>/models ./make_bundles.sh` |
+| `Driver workspace: N found under …` | 빌드된 드라이버 워크스페이스가 없거나 여러 개 | `DRIVER_WS=<경로> ./make_bundles.sh` |
+| `Specified isaac does not exist: …` | `run_dev.sh -d`에 준 경로가 틀림 | `echo $ISAAC_ROS_WS`를 확인하고 `-d` 없이 실행 |
+| `Could not resolve Dockerfiles for target image ids: …cumotion` | `~/.isaac_ros_common-config`가 다른 경로를 가리킴(예전에 복사한 파일). 바로 윗줄 `Using configured docker search paths`에 그 경로가 나옴 | 저장소의 `docker/isaac_ros_common-config`를 다시 복사 |
+| `failed to extract layer … no space left on device` (이미지를 받는 중) | 오류에 나온 경로(`/var/lib/containerd` 또는 `/var/lib/docker`)의 디스크가 가득 참 | `df -h <그 경로>`로 확인. 필요한 만큼 비운 뒤(`docker system df`로 지울 수 있는 양 확인) 다시 실행 |
+| `No model bundles: run docker/make_bundles.sh …` (이미지 빌드 중) | `make_bundles.sh`를 건너뜀 | 실행하고 `run_dev.sh`를 다시 |
+| `Exit code 100` (`nvv4l2`, PC 이미지 빌드 중) | NVIDIA Dockerfile 패치를 안 함 | PC 문서 6장 |
+| (Jetson) 이미지는 만들어졌는데 컨테이너가 안 뜸(`nvidia.com/gpu` 관련 오류) | CDI 설정이 없음 | Jetson 문서 1장 4번 |
+| `… expected one occurrence to patch` (이미지 빌드 중) | NVIDIA가 apt 패키지를 새 버전으로 바꿈 | 메시지가 가리키는 파일을 보고 `docker/patches/`를 맞춤 |
+| `no kernel image is available for execution on the device` | 커널이 다른 GPU 세대로 컴파일됨 | `echo $TORCH_CUDA_ARCH_LIST`가 PC `9.0+PTX`, Jetson `8.7`인지 확인 |
+| 첫 계획이 실패 | 5초 안에 안 끝나면 MoveIt 플러그인이 포기(x86에서도 13관절 그룹의 첫 계획은 9.4초) | 런치의 워밍업이 끝난 뒤 다시 보냄 |
+
+### 3. 워크스페이스·SDK가 기본 경로에 없을 때
+
+설치 문서의 명령은 `~/isaac_ros_ws`로 적혀 있습니다. 다른 곳이면 `ISAAC_ROS_WS`를 `~/.bashrc`에 넣고 명령의 `~/isaac_ros_ws` 자리에
+`$ISAAC_ROS_WS`를 씁니다. 나머지는 스스로 찾습니다.
+
+| 무엇 | 어떻게 찾나 |
+|---|---|
+| 드라이버 워크스페이스 (`make_bundles.sh`) | 지금 터미널에 source된 것 → 없으면 홈 아래에서 빌드된 것 하나. 여러 개면 멈추고 `DRIVER_WS=<경로>`를 요구 |
+| SDK의 `models` (`make_bundles.sh`) | 빌드된 드라이버가 링크한 SDK → 없으면 `~/sdk/rby1-sdk`. 직접 주려면 `RBY1_SDK_MODELS=<경로>` |
+| 이 저장소의 이미지 레이어 (`~/.isaac_ros_common-config`) | `isaac_ros_common` 옆의 `rby1_isaac_ros`(상대 경로). 두 저장소가 같은 `src/`에 있으면 됨 |
+| `isaac-ros` 함수 | `ISAAC_ROS_WS`, 없으면 `~/isaac_ros_ws` |
+
+`make_bundles.sh`는 찾은 두 경로를 첫 줄에 출력합니다.
+
+### 4. 컨테이너에 root로 들어가면
+
+ROS 2(FastDDS)는 같은 PC의 프로세스끼리 **공유 메모리**로 데이터를 주고받는데, 받는 쪽이 만든 영역에 보내는 쪽이 써야 합니다.
+컨테이너의 root가 만든 영역에는 호스트의 일반 사용자 프로세스(예: RB-Y1 드라이버)가 쓸 수 없어서, **서비스 탐색은 되는데 토픽이
+안 오는** 증상이 납니다. `run_dev.sh`가 만드는 `admin`은 호스트 사용자와 UID가 같아 문제가 없습니다.
+
+예전에 `-u admin` 없이 `isaac-ros` 함수를 등록했다면 `~/.bashrc`의 `docker exec -it "${container_name}" bash` 줄을
+`docker exec -it -u admin -w /workspaces/isaac_ros-dev "${container_name}" bash`로 고치고 `source ~/.bashrc`. 같은 함수가 두 번
+들어 있으면 뒤의 것이 쓰입니다.
+
+### 5. Jetson과 x86 PC
+
+**Jetson의 버전은 JetPack이 정합니다** (NVIDIA 문서, 2026-10-15 확인)
+
+| JetPack | Ubuntu | ROS 2 | Isaac ROS | Jetson Orin | 이 저장소 |
+|---|---|---|---|---|---|
+| 6.1·6.2 | 22.04 | Humble | `release-3.2` | 지원 | **지원** (`env_setup_jetson.md`) |
+| 7.0·7.1 | 24.04 | Jazzy | 4.x (4.0·4.3 확인) | 지원 목록에 없음(Thor만) | 아님 |
+| 7.2 | 24.04 | Jazzy | 최신 | 지원 | 아님 — ROS 배포판·설치 방식(Isaac ROS CLI)이 다르고, 이 저장소의 이미지 레이어는 Humble 기준 |
+
+**같은 `release-3.2`에서 PC와 달라지는 것**
+
+| 항목 | x86_64 PC | Jetson Orin |
+|---|---|---|
+| 그래픽 드라이버, Docker, NVIDIA 컨테이너 런타임 | 설치 | JetPack에 들어 있음. 대신 CDI 설정과 `pva-allow-2` |
+| 컨테이너 이름 | `isaac_ros_dev-x86_64-container` | `isaac_ros_dev-aarch64-container` — 문서의 명령은 `$(uname -m)`으로 적혀 있어 바꿀 필요가 없음 |
+| NVIDIA Dockerfile 패치(`nvv4l2`) | 필요 | 하지 않음 |
+| 이미지 빌드 파일 | `docker/Dockerfile.cumotion` | **같은 파일.** `run_dev.sh`가 넘기는 `PLATFORM`(amd64·arm64)을 보고 아래 줄만 달라짐 |
+| 바탕 이미지 | `tritonserver:24.08-py3` | `12.6.11-devel-aarch64-ubuntu22.04` (NVIDIA의 `Dockerfile.base`가 고름) |
+| torch | 빌드 시점의 최신(버전 고정 없음) | `2.5.0a0 … nv24.08` (JetPack 6.1용으로 고정) |
+| NVIDIA apt 패키지 | cuRobo 3.2.5, cuMotion 3.2.7, AprilTag 3.2.5, image_proc 3.2.10 | **같은 버전**(2026-10-13에 저장소 목록 대조) |
+| `docker/patches/`의 패치 3개 | 적용 | **그대로 적용됨.** 고치는 파일 4개가 x86 패키지와 바이트 단위로 같음 |
+| cuRobo 커널을 컴파일하는 GPU 세대 | `9.0+PTX` (RTX 50 우회) | `8.7` |
+| 로봇 시뮬레이터 | 같은 PC에서 | x86 전용 이미지라 뜨지 않음 — 실물, 또는 다른 PC의 시뮬레이터를 `robot_ip`로 |
+| 계획·추적 시간 | 이 문서의 수치(RTX 5070) | **다시 재야 함.** `ros2 run rby1_cumotion replan_benchmark --runs 10`. 이동 중 회피는 재계획이 약 0.2초 안에 끝나는 것을 전제로 하므로(`avoid.lead`), 그보다 길면 `avoid.lead`를 늘리거나 `avoid.replan_seeds`·`replan_steps`를 줄임 |
+
+- `make_bundles.sh` 대신 다른 PC에서 만든 `docker/bundles/`와 `docker/driver_msgs/`를 같은 자리에 복사해도 됩니다(아키텍처와 무관한 파일).
+
+### 6. GPU 문제 해결
+
+cuMotion(cuRobo)은 CUDA 커널을 직접 컴파일하고 실행합니다. 아래는 이 프로젝트에서 실제로 겪은 것이고, **`nvidia-smi`가 정상으로
+보여도 발생합니다.**
+
+#### 6.1. `torch.cuda.is_available()`가 True여도 GPU 준비가 끝난 게 아닙니다
+
+```
+nvcc fatal : Unsupported gpu architecture 'compute_120'
+RuntimeError: Error building extension 'kinematics_fused_cu'
+```
+
+torch는 sm_120 커널을 **미리 빌드해서** 배포하므로 True를 반환합니다. 하지만 cuRobo는 런타임에 `nvcc`로 JIT 컴파일하고,
+`release-3.2` 컨테이너의 CUDA 12.6은 최대 `compute_90`까지만 압니다. Blackwell(RTX 50xx)은 `compute_120`이라 CUDA 12.8+ 툴킷이 필요합니다.
+
+```bash
+nvcc --version                                   # 컨테이너 안
+python3 -c "import torch; print(torch.cuda.get_device_capability())"
+```
+
+**우회** — PTX로 빌드하고 드라이버가 실행 시점에 변환하게 합니다(`TORCH_CUDA_ARCH_LIST=9.0+PTX`). 이 값은 `Dockerfile.cumotion`에
+ENV로 들어 있습니다. 네이티브 대비 최적은 아니므로 **툴킷을 12.8+로 올리는 것이 정공법**입니다.
+
+#### 6.2. 커널 컴파일에는 GPU가 필요 없습니다
+
+`nvcc`만 있으면 되므로 `docker build` 단계에서 미리 컴파일합니다(5개 확장, 66 MB, 3분 2초). 컨테이너마다 3분씩 재컴파일하던 것이
+import 1\~2초로 끝납니다.
+
+> [!NOTE]
+> cuRobo는 `load()` 호출 **전에** 무조건 `kinematics_fused_cu not found, JIT compiling...`을 출력합니다. **캐시 미적중이 아닙니다.**
+> 소요 시간으로 판단하십시오.
+
+#### 6.3. 캐시 디렉터리 권한
+
+```
+PermissionError: [Errno 13] Permission denied: '/home/triton-server'
+```
+
+컨테이너를 임의 UID로 실행하면 이미지 기본 사용자의 홈에 쓸 수 없습니다. 고정된 쓰기 가능 경로를 이미지 ENV로 굽고
+(`TORCH_EXTENSIONS_DIR=/opt/rby1/torch_extensions`, `TRITON_CACHE_DIR=/opt/rby1/triton`, `XDG_CACHE_HOME=/opt/rby1/xdg`),
+빌드에서 `chmod -R a+rwX /opt/rby1`을 겁니다.
+
+#### 6.4. 컨테이너가 실행 중 GPU 접근을 잃습니다
+
+```
+Failed to initialize NVML: Unknown Error
+```
+
+`/dev/nvidia*`는 멀쩡한데 NVML만 실패합니다. systemd cgroup 재로드 때 생기는 알려진 문제로, **컨테이너 재시작으로 복구**됩니다.
+이미지를 다시 빌드할 필요는 없습니다.
+
+```bash
+docker restart isaac_ros_dev-$(uname -m)-container
+```
+
+#### 6.5. `Driver/library version mismatch`
+
+부팅 후 `unattended-upgrade`가 NVIDIA 패키지를 교체하면, **메모리에 로드된 커널 모듈**과 **설치된 NVML/사용자 라이브러리** 버전이
+어긋납니다. 2026-09-15 실제 사례:
+
+| 항목 | 값 |
+|---|---|
+| 부팅 | 08:53:37 |
+| `unattended-upgrade` 실행 | 09:26:31–09:27:15 |
+| 메모리에 로드된 커널 모듈 | 580.173.02 |
+| 설치된 NVML / 사용자 라이브러리 | 580.178.04 |
+| 디스크의 커널 모듈 / DKMS | 580.178.04 (현재 커널에 설치 완료) |
+
+**호스트에서 생긴 문제라 Docker 이미지를 다시 빌드해도 해결되지 않습니다.** 새 모듈은 이미 설치돼 있으니 재부팅이 해법입니다.
+
+```bash
+cat /sys/module/nvidia/version      # 메모리에 로드된 것
+modinfo -F version nvidia           # 디스크에 있는 것
+nvidia-smi
+sudo reboot                         # 작업 저장 후
+
+# 재부팅 이후 — 세 값이 일치해야 합니다
+cat /sys/module/nvidia/version
+nvidia-smi
+docker run --rm --gpus all --entrypoint nvidia-smi isaac_ros_dev-$(uname -m):latest
+```
+
+[Ubuntu 공식 문서](https://ubuntu.com/server/docs/how-to/graphics/install-nvidia-drivers/)도 업데이트 후 모듈/라이브러리 불일치에
+재부팅을 안내합니다.
+
+#### 6.6. GPU 메모리
+
+**cuMotion 플래너 1개가 GPU 7\~10.5 GB를 점유합니다.** 12 GB 카드에는 하나만 뜹니다.
+
+```bash
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
+```
+
+이전 인스턴스를 확실히 종료하지 않고 다시 띄우면 `torch.OutOfMemoryError`로 죽습니다. `pkill -f "ros2 launch"`는 자식 노드를 남기므로
+**프로세스 그룹 단위로** 정리해야 합니다.

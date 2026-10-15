@@ -45,7 +45,7 @@ flowchart TB
 
 | 항목 | 값 |
 |---|---|
-| 환경 | [env_setup_ubuntu_22_04.md](env_setup_ubuntu_22_04.md) (GPU 드라이버, Docker, `isaac-ros` 명령) |
+| 환경 | [env_setup_ubuntu_22_04.md](env_setup_ubuntu_22_04.md) (PC), [env_setup_jetson.md](env_setup_jetson.md) (Jetson) — 드라이버, Docker, 이미지, `isaac-ros` 명령 |
 | 이미지와 빌드 | 저장소 [README 2장](../README.md#2--컨테이너에서-패키지-빌드) |
 | 드라이버 | `~/ros2_driver_ws` 빌드 (드라이버 저장소 README) |
 
@@ -88,7 +88,7 @@ ros2 launch rby1_cumotion demo.launch.py          # RViz 포함. 창 없이: cum
 ```
 
 - 계획하는 팔은 하나입니다(기본 오른팔, [5.1](#51-계획하는-팔-robotgroup)).
-- 컨테이너 프롬프트는 `admin@…`이어야 합니다(`root@…`이면 [env_setup 8.2](env_setup_ubuntu_22_04.md)). 컨테이너는 처음 켠 터미널을 닫으면 삭제됩니다.
+- 컨테이너 프롬프트는 `admin@…`이어야 합니다(`root@…`이면 [env_setup 7.2](env_setup_ubuntu_22_04.md#72-isaac-ros-명령-등록)). 컨테이너는 처음 켠 터미널을 닫으면 삭제됩니다.
 - 접속할 로봇은 `rby1_driver/config/driver_parameters.yaml`의 `robot_ip`입니다.
 - 끌 때는 cuMotion 런치 → 드라이버 순서로 Ctrl+C.
 

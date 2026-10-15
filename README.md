@@ -11,8 +11,10 @@ Rainbow Robotics의 로봇 플랫폼(RBY1 등)에서 NVIDIA Isaac ROS의 하드�
 호스트 OS에 맞는 환경 구성 문서를 **끝까지** 따라 합니다. NVIDIA 드라이버, Docker, 저장소 클론, 이미지 만들기, 첫 컨테이너 진입,
 컨테이너 단축 명령 `isaac-ros` 등록까지 그 문서에 있습니다.
 
-* 📌 **Ubuntu 22.04 LTS (ROS 2 Humble / release-3.2 권장)** — x86 PC와 Jetson Orin(9장):  
+* 📌 **Ubuntu 22.04 LTS PC (ROS 2 Humble / release-3.2 권장)**:  
   👉 **[docs/env_setup_ubuntu_22_04.md](docs/env_setup_ubuntu_22_04.md)**
+* 📌 **Jetson Orin (JetPack 6.1·6.2, ROS 2 Humble / release-3.2)**:  
+  👉 **[docs/env_setup_jetson.md](docs/env_setup_jetson.md)**
 * 📌 **Ubuntu 24.04 LTS (ROS 2 Jazzy / release-4.0+ 권장)**:  
   👉 **[docs/env_setup_ubuntu_24_04.md](docs/env_setup_ubuntu_24_04.md)**
 
@@ -51,7 +53,7 @@ git clone -b release-4.0 https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pip
 ## 2. 🧩 컨테이너에서 패키지 빌드
 
 환경 구성을 끝냈으면 컨테이너에 들어가 이 저장소의 패키지를 빌드합니다. 컨테이너를 끄거나 터미널을 더 여는 방법은
-[환경 구성 8.3](docs/env_setup_ubuntu_22_04.md#83-컨테이너-쓰기)에 있습니다.
+[환경 구성 7.3](docs/env_setup_ubuntu_22_04.md#73-컨테이너-쓰기)에 있습니다.
 
 ```bash
 isaac-ros                                         # 호스트: 컨테이너에 들어갑니다 (꺼져 있으면 켭니다)
