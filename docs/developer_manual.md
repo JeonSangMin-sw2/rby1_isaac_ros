@@ -1062,7 +1062,7 @@ python3 -m pytest test/ -q -p no:cacheprovider -p no:anyio
 | 이미지 빌드가 `No model bundles: run docker/make_bundles.sh on the host first` | `make_bundles.sh`를 건너뜀 | 실행 후 다시 빌드 (메시지가 안내) |
 | `nvidia-smi`가 `Driver/library version mismatch`, `Failed to initialize NVML` | GPU 드라이버 문제 | [env_setup 10장](env_setup_ubuntu_22_04.md) |
 | 패키지 빌드가 `[Errno 17] File exists: ... resource/rby1_cumotion` | 이전 빌드 잔재 | `rm -rf build/rby1_cumotion install/rby1_cumotion` 후 다시 빌드 |
-| `ros2 run rby1_cumotion ...`이 `Package not found` | 워크스페이스 빌드 전 | README 2장 Step 3 |
+| `ros2 run rby1_cumotion ...`이 `Package not found` | 워크스페이스 빌드 전 | README 2장 Step 2 |
 | 컨테이너 프롬프트가 `root@…` | `-u admin` 없이 들어옴 | 나가서 `isaac-ros`로 다시. `isaac-ros`가 root로 들어가면 `~/.bashrc`의 함수를 [env_setup 8.2](env_setup_ubuntu_22_04.md)대로(같은 함수가 두 번 있으면 뒤의 것이 쓰임). 기동 중에 root면 `read_robot`이 원인을 로그에 붙임 |
 | `RTPS_TRANSPORT_SHM Error ... open_and_lock_file failed` 뒤 토픽이 안 옴 | 강제로 끈 ROS 프로세스들의 공유 메모리 잔재 | 호스트에서 `fastdds shm clean` 후 그 노드를 다시 실행 |
 | `Couldn't parse parameter override rule ... Sequence should be of same type` | 예제의 목록 파라미터(`16_target_shuttle_publisher`의 `point_a`·`point_b`)에 정수가 섞임. rclpy가 노드 코드 전에 실패 | 모든 값을 `1.0`처럼 소수로 |

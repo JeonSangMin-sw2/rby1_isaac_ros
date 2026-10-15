@@ -61,7 +61,7 @@ export ROS_DOMAIN_ID=30                              # 이 터미널에서만 (�
 echo 'export ROS_DOMAIN_ID=30' >> ~/.bashrc          # 항상 (새 터미널부터)
 ```
 
-- 컨테이너는 만들어질 때의 호스트 값을 받습니다. 번호를 바꿨으면 `docker stop isaac_ros_dev-x86_64-container` 뒤 `isaac-ros`로 다시 만듭니다.
+- 컨테이너는 만들어질 때의 호스트 값을 받습니다. 번호를 바꿨으면 `docker stop isaac_ros_dev-$(uname -m)-container` 뒤 `isaac-ros`로 다시 만듭니다.
 - 확인: `echo $ROS_DOMAIN_ID`. 컨테이너에서 `ros2 node list`에 `/rby1/rby1_ros2_driver`가 보이면 같은 도메인입니다.
 
 ---

@@ -190,8 +190,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
 
 ### 8.1. 최초 컨테이너 빌드 & 진입 테스트
 
-이 저장소(`rby1_isaac_ros`)는 cuMotion·AprilTag·영상 보정을 **이미지 레이어 하나**(`docker/Dockerfile.cumotion`)로 넣습니다. 첫 빌드
-전에 아래 두 가지를 해 두면 이미지를 한 번만 만듭니다(하지 않고 빌드했다면, 한 뒤 `run_dev.sh`를 다시 실행하면 그 레이어만 더 만듭니다).
+이 저장소(`rby1_isaac_ros`)는 cuMotion·AprilTag·영상 보정을 **이미지 레이어 하나**(`docker/Dockerfile.cumotion`)로 넣습니다.
+아래 1~3을 **순서대로 모두** 합니다. 1·2를 빼면 이 저장소의 레이어가 없는 이미지가 만들어지거나 빌드가 `No model bundles`로 멈춥니다.
 
 ```bash
 # 1. 이미지에 넣을 로봇 모델과 드라이버 메시지 준비 (드라이버 워크스페이스가 빌드돼 있어야 함)
@@ -271,6 +271,25 @@ isaac-ros
 >
 > 이전에 `-u admin` 없이 등록했다면 `~/.bashrc`의 `docker exec -it "${container_name}" bash` 줄을 위처럼 고치고
 > `source ~/.bashrc` 하십시오.
+
+### 8.3. 컨테이너 쓰기
+
+이제부터 컨테이너는 `isaac-ros` 한 단어로 켜고 들어갑니다. 아래 명령의 컨테이너 이름은 PC(`x86_64`)와 Jetson(`aarch64`)에서
+`$(uname -m)`이 알아서 바꿉니다.
+
+```bash
+isaac-ros                                                    # 켜기·들어가기. 터미널을 더 열 때도 같은 명령
+exit                                                         # 컨테이너 셸에서 나오기
+docker stop isaac_ros_dev-$(uname -m)-container              # 컨테이너 끄기 (호스트)
+```
+
+> [!WARNING]
+> 직접 들어갈 때(`docker exec -it -u admin -w /workspaces/isaac_ros-dev isaac_ros_dev-$(uname -m)-container bash`) `-u admin`을
+> 빼면 root로 들어가고, root 셸에서는 호스트 ROS 노드(예: RB-Y1 드라이버)의 토픽이 오지 않습니다.
+
+> [!TIP]
+> 컨테이너 안에서 `apt`나 `rosdep`으로 설치한 패키지는 컨테이너를 새로 만들면 사라집니다. 남기려면 호스트에서 지금 컨테이너를
+> 이미지로 저장합니다: `docker commit isaac_ros_dev-$(uname -m)-container isaac_ros_dev-$(uname -m):latest`
 
 ---
 
@@ -352,7 +371,8 @@ cd $ISAAC_ROS_WS/src/isaac_ros_common && ./scripts/run_dev.sh
 - 3번 대신 다른 PC에서 만든 `docker/bundles/`와 `docker/driver_msgs/`를 같은 자리에 복사해도 됩니다(아키텍처와 무관한 파일).
 - [7장](#7-중요-필수-x86_64-pc-dockerfile-사전-패치)의 Dockerfile 패치는 **하지 않습니다**(x86 전용).
 - 5번이 끝나면 프롬프트가 `admin@…:/workspaces/isaac_ros-dev$`가 됩니다. 컨테이너 이름은 `isaac_ros_dev-aarch64-container`입니다.
-- 다음부터 한 단어로 들어가려면 [8.2절](#82-어디서나-한-번에-접속하는-스마트-단축-커맨드-등록-isaac-ros)의 `isaac-ros` 함수를 등록합니다.
+- **이어서 [8.2절](#82-어디서나-한-번에-접속하는-스마트-단축-커맨드-등록-isaac-ros)의 `isaac-ros` 함수를 등록합니다.** 이후 컨테이너는
+  `isaac-ros`로 켜고 들어갑니다([8.3절](#83-컨테이너-쓰기)).
 
 ### 9.3. 컨테이너에서 빌드하고 확인하기
 
@@ -393,7 +413,7 @@ ros2 run rby1_cumotion check_plan                            # 계획 1회, 로�
 
 | 항목 | x86_64 PC | Jetson Orin |
 |---|---|---|
-| 컨테이너 이름 | `isaac_ros_dev-x86_64-container` | `isaac_ros_dev-aarch64-container` — 문서의 `docker exec`·`docker stop` 명령에서 이름을 바꿉니다(`isaac-ros` 함수는 알아서 고릅니다) |
+| 컨테이너 이름 | `isaac_ros_dev-x86_64-container` | `isaac_ros_dev-aarch64-container` — 문서의 명령은 `$(uname -m)`으로 적혀 있어 바꿀 필요가 없습니다(`isaac-ros` 함수도 알아서 고릅니다) |
 | 7장의 Dockerfile 패치 | 필요 | **하지 않습니다** |
 | 이미지 빌드 파일 | `docker/Dockerfile.cumotion` | **같은 파일.** `run_dev.sh`가 넘기는 `PLATFORM`(amd64·arm64)을 보고 아래 줄만 달라집니다 |
 | 바탕 이미지 | `tritonserver:24.08-py3` | `12.6.11-devel-aarch64-ubuntu22.04` (NVIDIA의 `Dockerfile.base`가 고릅니다) |
@@ -475,7 +495,7 @@ Failed to initialize NVML: Unknown Error
 **컨테이너 재시작으로 복구**됩니다. 이미지를 다시 빌드할 필요는 없습니다.
 
 ```bash
-docker restart isaac_ros_dev-x86_64-container
+docker restart isaac_ros_dev-$(uname -m)-container
 ```
 
 ### 10.5. `Driver/library version mismatch`
@@ -506,7 +526,7 @@ sudo reboot
 # 재부팅 이후 — 세 값이 일치해야 합니다
 cat /sys/module/nvidia/version
 nvidia-smi
-docker run --rm --gpus all --entrypoint nvidia-smi isaac_ros_dev-x86_64:latest
+docker run --rm --gpus all --entrypoint nvidia-smi isaac_ros_dev-$(uname -m):latest
 ```
 
 [Ubuntu 공식 문서](https://ubuntu.com/server/docs/how-to/graphics/install-nvidia-drivers/)도
